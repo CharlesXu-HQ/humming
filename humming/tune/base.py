@@ -168,6 +168,13 @@ class DeviceHeuristics:
             block_shape_k = block_shape_k // 2
             warp_shape_k = warp_shape_k // 2
 
+        has_wide_k_tile = warp_shape_k * layer_config.a_dtype.num_bits >= 1024
+        if 80 <= cls.sm_version < 90 and layer_config.use_ldmatrix_dequant and has_wide_k_tile:
+            num_warps_m = block_shape_m // warp_shape_m
+            warp_shape_m = min(warp_shape_m, 64)
+            block_shape_m = num_warps_m * warp_shape_m
+            num_blocks_m = cls.estimate_num_blocks_m(layer_config, shape_m, block_shape_m)
+
         num_warps_m = block_shape_m // warp_shape_m
         num_warps_n = block_shape_n // warp_shape_n
         num_warps_k = block_shape_k // warp_shape_k
