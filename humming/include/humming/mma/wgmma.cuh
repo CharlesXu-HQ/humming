@@ -81,9 +81,9 @@ public:
 
   CUDA_INLINE
   void transform_b(uint32_t buffer_id, uint32_t iter_id) {
-    if constexpr (Ctx::kUseRawWeight || std::is_same<ElementB, ElementQB>::value) return;
-
-    if constexpr (kUseFusedE8m0Scale) {
+    if constexpr (Ctx::kUseRawWeight || std::is_same<ElementB, ElementQB>::value) {
+      return;
+    } else if constexpr (kUseFusedE8m0Scale) {
       uint32_t *regs_b_ptr = reinterpret_cast<uint32_t *>(regs_b[buffer_id]);
       constexpr uint32_t kTransformIters = kUsePackedKLayout ? kNumKSlabs : WarpShape::N / 16;
       fused_dequant_for_mxfp4<ElementB, kTransformIters, true>(regs_qb[buffer_id], regs_b_ptr, arith.bs[buffer_id]);
@@ -157,7 +157,7 @@ public:
 
       PRAGMA_UNROLL
       for (uint32_t j = 0; j < kNumIters; j++) {
-        if constexpr (Ctx::kUseRawWeight) {
+        if constexpr (Ctx::kUseWgmmaSs) {
           static_assert(Ctx::kUseFlatWeight);
           uint32_t row = ctx.n_warp_id() / 4 * (WarpShape::N * 4) + j * MmaShape::N;
           if constexpr (Ctx::kUseWgmmaTmaNPermute) {
@@ -232,7 +232,7 @@ public:
 
   template <class T = uint32_t>
   CUDA_INLINE T *regs_qb_as_ptr(uint32_t buffer_id) {
-    if constexpr (std::is_same<ElementB, ElementQB>::value) {
+    if constexpr (Ctx::kUseLdmatrixDequant || std::is_same<ElementB, ElementQB>::value) {
       return reinterpret_cast<T *>(regs_b[buffer_id]);
     } else {
       return reinterpret_cast<T *>(regs_qb[buffer_id]);

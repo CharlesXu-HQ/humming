@@ -17,6 +17,8 @@ MODES = (
     "mma_e0m3_ab",
     "cvt_e3m4",
     "cvt_e0m3",
+    "ldmatrix_s4_s8",
+    "ldmatrix_s2_s4",
 )
 
 _RC_MESSAGE = {

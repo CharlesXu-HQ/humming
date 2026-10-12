@@ -52,6 +52,7 @@ def _stage_storage_bytes(
     # a[]: alignas(1024); b[]: alignas(128)
     fields.append((block_m * block_k * a_bits // 8, 1024))
     use_umma_ss = mma_type == MmaType.UMMA and layer_config.use_raw_weight
+    use_umma_ss &= not layer_config.use_ldmatrix_dequant
     weight_smem_bits = max(8, b_bits) if use_umma_ss and a_bits == 8 else b_bits
     expand_low_bit_weight = use_umma_ss and a_bits == 8 and b_bits < 8
     weight_k_alignment = math.gcd(block_k, 128)
@@ -242,7 +243,8 @@ def estimate_smem_size_layer(
 
     if mma_type == MmaType.UMMA:
         add(16, 8)  # Accumulator ready/free
-        if layer_config.use_raw_weight and gemm_type == GemmType.INDEXED:
+        use_umma_ss = layer_config.use_raw_weight and not layer_config.use_ldmatrix_dequant
+        if use_umma_ss and gemm_type == GemmType.INDEXED:
             add(16, 8)  # Output row-index buffers released by the epilogue
         add(4, 4)  # TMEM allocation
         operand_barrier_bytes = 8 * (num_stages + max(num_stages, 4))

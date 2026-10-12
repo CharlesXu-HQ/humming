@@ -121,7 +121,7 @@ public:
   void load_raw(int4 *smem_ptr) {
     if constexpr (Ctx::kUseFlatWeight) return load_flat(smem_ptr);
     if constexpr (kUseAiu) return load_raw_aiu(smem_ptr);
-    static_assert(ElementA::kBits == ElementQB::kBits);
+    static_assert(ElementA::kBits == ElementQB::kBits || Ctx::kUseLdmatrixDequant);
     constexpr uint32_t kRowInt4s = BlockShape::K * ElementQB::kBits / 128;
     constexpr uint32_t kGlobalRowInt4s = ProblemShape::K * ElementQB::kBits / 128;
     constexpr uint32_t kSwizzleInt4s = kSwizzleBytes / sizeof(int4);

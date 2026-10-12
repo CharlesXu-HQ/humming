@@ -159,7 +159,7 @@ def get_register_budget_error(layer_config, tuning_config, use_f16_accum=False, 
     num_math_threads = math.prod(tuning_config.block_shape) // math.prod(tuning_config.warp_shape) * 32
     num_threads = num_math_threads + (128 if tuning_config.use_warp_spec else 0)
     if mma_type == MmaType.UMMA:
-        if layer_config.use_raw_weight:
+        if layer_config.use_raw_weight and not layer_config.use_ldmatrix_dequant:
             dequant_threads = 0
         else:
             dequant_threads = 128 * tuning_config.umma_num_dequant_warpgroups
@@ -178,7 +178,8 @@ def get_register_budget_error(layer_config, tuning_config, use_f16_accum=False, 
         # 26 extra registers for SS, or 30 for RS, beyond its accumulator tuple.
         # setmaxnreg can raise the runtime math budget, but not this compile limit.
         instruction_accumulators = warp_m // (4 if use_f16_accum else 2)
-        instruction_overhead = 26 if layer_config.use_raw_weight else 30
+        use_wgmma_ss = layer_config.use_raw_weight and not layer_config.use_ldmatrix_dequant
+        instruction_overhead = 26 if use_wgmma_ss else 30
         instruction_registers = instruction_accumulators + instruction_overhead
         if layer_config.use_packed_k_layout and tuning_config.wgmma_split_issue_wait:
             # Split packed-K keeps all RS K slabs live across prefetch. The
@@ -216,8 +217,8 @@ def get_register_budget_error(layer_config, tuning_config, use_f16_accum=False, 
     buffer_registers = (warp_m + warp_n) / 4
     if mma_type == MmaType.WGMMA:
         # A is always in smem; raw-weight SS also keeps B in smem.
-        buffer_registers = 0 if layer_config.use_raw_weight else warp_n / 4
-        if not layer_config.use_raw_weight and layer_config.use_packed_k_layout:
+        buffer_registers = 0 if use_wgmma_ss else warp_n / 4
+        if not use_wgmma_ss and layer_config.use_packed_k_layout:
             # The packed B buffer holds one N=64 WGMMA fragment across all K slabs.
             buffer_registers = warp_k * layer_config.a_dtype.num_bits / 64
     if has_group_accumulator:

@@ -88,7 +88,7 @@ inline void check_tensor_b(Tensor &tensor, KernelData &kernel_data, int64_t dev)
   std::vector<int64_t> expected_shape = {};
   if (kernel_data.gemm_type_id != 0) expected_shape.push_back(kernel_data.num_experts);
   if (kernel_data.use_raw_weight) {
-    if (get_dtype_num_bits(kernel_data.a_dtype_id) == 8 && num_bits < 8)
+    if (!kernel_data.use_ldmatrix_dequant && get_dtype_num_bits(kernel_data.a_dtype_id) == 8 && num_bits < 8)
       problem_shape_k = CEIL_DIV(problem_shape_k, 128) * 128;
     expected_shape.push_back(problem_shape_n);
     expected_shape.push_back(problem_shape_k * num_bits / 32);
@@ -392,7 +392,8 @@ inline CUtensorMap make_tma_desc_b(Tensor &tensor, KernelData &kernel_data) {
 
   if (kernel_data.use_flat_weight) {
     CUtensorMap descriptor{};
-    uint64_t warp_n = kernel_data.mma_type == MmaType::WGMMA ? kernel_data.warp_shape_n : 16;
+    bool use_wgmma_ss = kernel_data.mma_type == MmaType::WGMMA && !kernel_data.use_ldmatrix_dequant;
+    uint64_t warp_n = use_wgmma_ss ? kernel_data.warp_shape_n : 16;
     uint64_t total_n = uint64_t(kernel_data.problem_shape_n) * std::max(1u, kernel_data.num_experts);
     uint64_t row_bytes = uint64_t(tensor.size(-1)) * 4;
     uint64_t dimensions[] = {64, 64 / warp_n, total_n / 64, warp_n / 16, row_bytes / 16};
@@ -409,7 +410,7 @@ inline CUtensorMap make_tma_desc_b(Tensor &tensor, KernelData &kernel_data) {
 
   if (kernel_data.use_raw_weight) {
     // FP4/FP6 in an f8f6f4 instruction uses padded 16-element blocks in SMEM.
-    bool expand_low_bit = num_bits < 8 && get_dtype_num_bits(kernel_data.a_dtype_id) == 8;
+    bool expand_low_bit = !kernel_data.use_ldmatrix_dequant && num_bits < 8 && get_dtype_num_bits(kernel_data.a_dtype_id) == 8;
     uint32_t smem_bits = expand_low_bit ? 8 : num_bits;
     uint32_t swizzle_bytes = expand_low_bit ? 128 : std::min(128u, block_shape_k * smem_bits / 8);
     if (expand_low_bit) {

@@ -337,6 +337,7 @@ std::tuple<int64_t, std::string> register_kernel(const std::string &cubin_path) 
       reader.getBool("USE_UMMA_SS"),
       reader.getBool("USE_RAW_WEIGHT"),
       reader.getBool("USE_FLAT_WEIGHT"),
+      reader.getBool("USE_LDMATRIX_DEQUANT"),
       reader.getBool("USE_BLOCK_SCALED_MMA")};
 
   std::unique_lock lock(g_kernel_mutex);

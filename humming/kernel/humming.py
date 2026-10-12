@@ -42,6 +42,7 @@ CODE_TEMPLATE = jinja2.Template("""
 {{tuning_config_macro}}
 
 #define HUMMING_USE_UMMA_PIPELINE {{use_umma_pipeline | int}}
+#define HUMMING_USE_NATIVE_LDMATRIX_DEQUANT {{use_native_ldmatrix_dequant | int}}
 #define HUMMING_BLOCK_SHAPE_M {{block_shape[0]}}
 #define HUMMING_BLOCK_SHAPE_N {{block_shape[1]}}
 #define HUMMING_BLOCK_SHAPE_K {{block_shape[2]}}
@@ -163,6 +164,7 @@ class HummingKernel(KernelRuntime, LayerConfig, ComputeConfig, TuningConfig):
         template_args = self.to_template_args()
         template_args.update(
             use_umma_pipeline=self.use_umma_pipeline,
+            use_native_ldmatrix_dequant=self.use_native_ldmatrix_dequant,
             mma_op_class=self.mma_op_class.to_cpp_str(),
             mma_b_dtype=self.mma_b_dtype.to_cpp_str(),
             problem_shape=self.problem_shape,
@@ -226,7 +228,19 @@ class HummingKernel(KernelRuntime, LayerConfig, ComputeConfig, TuningConfig):
         module = jit_utils.make_humming_module("get_kernel_id", self.kernel_id)
         return module.get_kernel_id
 
+    @property
+    def use_native_ldmatrix_dequant(self):
+        has_native_conversion = self.use_ldmatrix_dequant and self.b_dtype.num_bits == 4
+        has_native_target = self.sm_version >= 90 and _cuda_compiler_version(self._get_compiler()) >= (13, 4)
+        return has_native_conversion and has_native_target
+
     def postprocess_cubin(self, cubin_path: str):
+        if self.use_ldmatrix_dequant and not self.use_native_ldmatrix_dequant:
+            from humming.utils.cubin import patch_cubin
+
+            mode = "ldmatrix_s4_s8" if self.b_dtype.num_bits == 4 else "ldmatrix_s2_s4"
+            if patch_cubin(cubin_path=cubin_path, mode=mode) == 0:
+                raise RuntimeError("No ldmatrix dequantization placeholders found in cubin")
         if self.mma_type == MmaType.UMMA:
             return  # UMMA encodes operand formats directly in its descriptor.
         mode = ""
@@ -260,7 +274,7 @@ class HummingKernel(KernelRuntime, LayerConfig, ComputeConfig, TuningConfig):
             and self.a_dtype in (dtypes.float8e4m3, dtypes.float8e5m2, dtypes.float8e3m4)
             and self.b_dtype in (dtypes.float4e2m1, dtypes.float6e3m2, dtypes.float6e2m3)
         )
-        use_native_weight = self.use_raw_weight or mma_native_mixed
+        use_native_weight = (self.use_raw_weight and not self.use_ldmatrix_dequant) or mma_native_mixed
         use_native_weight |= self.mma_type == MmaType.MXMMA and self.mxmma_native_mixed
         if use_native_weight:
             self.mma_b_dtype = self.b_dtype
@@ -306,7 +320,7 @@ class HummingKernel(KernelRuntime, LayerConfig, ComputeConfig, TuningConfig):
         if self.sm_version == 75:
             if self.a_dtype == dtypes.float16:
                 mma_shape_k = 8
-            elif self.a_dtype == dtypes.int8:
+            elif self.a_dtype in (dtypes.int8, dtypes.int4):
                 mma_shape_m = 8
 
         if self.mma_type == MmaType.MMA and self.warp_shape[0] % 16 == 8:
@@ -407,7 +421,7 @@ class HummingKernel(KernelRuntime, LayerConfig, ComputeConfig, TuningConfig):
 
     def check_dtype(self):
         dtype_map = {
-            dtypes.int4: 80,
+            dtypes.int4: 75,
             dtypes.int8: 75,
             dtypes.float4e0m3: 100 if self.mma_type == MmaType.UMMA else 120,
             dtypes.float4e2m1: 100 if self.mma_type == MmaType.UMMA else 120,
@@ -497,7 +511,8 @@ class HummingKernel(KernelRuntime, LayerConfig, ComputeConfig, TuningConfig):
             assert compiler_error is None, compiler_error
         if self.mma_type == MmaType.WGMMA:
             assert self.sm_version == 90, "WGMMA requires SM90"
-        if self.use_raw_weight and self.a_dtype.num_bits != self.b_dtype.num_bits:
+        has_mixed_raw_weights = self.use_raw_weight and self.a_dtype.num_bits != self.b_dtype.num_bits
+        if has_mixed_raw_weights and not self.use_ldmatrix_dequant:
             assert self.mma_type == MmaType.UMMA, "mixed raw weights require UMMA SS"
         assert self.num_threads <= 1024
         if self.gemm_type is None and self.num_experts == 0:

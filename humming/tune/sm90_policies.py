@@ -42,7 +42,8 @@ def fit_sm90_tile(
     has_weight_scale_accumulator = has_group_weight_scale and not layer_config.use_fused_e8m0_scale
     has_scaled_accumulator = layer_config.is_group_input_scale or has_weight_scale_accumulator
     has_group_accumulator = layer_config.a_dtype.num_bits < 16 and has_scaled_accumulator
-    has_unpacked_rs = not layer_config.use_raw_weight and not layer_config.use_packed_k_layout
+    use_wgmma_ss = layer_config.use_raw_weight and not layer_config.use_ldmatrix_dequant
+    has_unpacked_rs = not use_wgmma_ss and not layer_config.use_packed_k_layout
     should_widen_rs = has_unpacked_rs and has_group_accumulator and not use_warp_spec and warp_n < 32
     if mma_type == MmaType.WGMMA and should_widen_rs and layer_config.shape_n % 128 == 0:
         config["block_shape"] = (block_m, max(128, block_n), block_k)

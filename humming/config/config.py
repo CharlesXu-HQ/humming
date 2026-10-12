@@ -81,6 +81,7 @@ class LayerConfig(BaseHummingConfig):
         "is_tensor_input_scale_2",
         "use_raw_weight",
         "use_flat_weight",
+        "use_ldmatrix_dequant",
         "use_native_dequant",
         "use_block_scaled_mma",
         "mma_scale_group_size",
@@ -131,8 +132,15 @@ class LayerConfig(BaseHummingConfig):
         return use_f16_umma or use_fp8_umma or use_fp4_umma or use_int8_umma
 
     @property
+    def use_ldmatrix_dequant(self):
+        has_int4_weight = self.a_dtype == dtypes.int8 and self.b_dtype in (dtypes.int4, dtypes.uint4)
+        has_int2_weight = self.a_dtype == dtypes.int4 and self.b_dtype in (dtypes.int2, dtypes.uint2)
+        has_supported_device = self.sm_version >= 75 and not current_device.is_ppu
+        return has_supported_device and not self.has_zero_point and (has_int4_weight or has_int2_weight)
+
+    @property
     def use_raw_weight(self):
-        if self.a_dtype.num_bits == self.b_dtype.num_bits:
+        if self.a_dtype.num_bits == self.b_dtype.num_bits or self.use_ldmatrix_dequant:
             return True
         has_native_mixed_activation = self.a_dtype in (
             dtypes.float8e4m3,
@@ -573,7 +581,9 @@ class TuningConfig(BaseHummingConfig):
 
     @property
     def use_umma_ss(self):
-        return self.mma_type == MmaType.UMMA and getattr(self, "use_raw_weight", False)
+        has_native_weights = getattr(self, "use_raw_weight", False)
+        has_native_weights &= not getattr(self, "use_ldmatrix_dequant", False)
+        return self.mma_type == MmaType.UMMA and has_native_weights
 
     @property
     def smem_reuse_mode_id(self):
