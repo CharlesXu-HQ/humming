@@ -18,6 +18,7 @@ from humming.config.enum import (
     WeightScaleType,
 )
 from humming.device import DeviceInfo, current_device
+from humming.utils.cubin import is_cubin_patch_enabled
 from humming.utils.math import round_up
 
 
@@ -136,7 +137,16 @@ class LayerConfig(BaseHummingConfig):
         has_int4_weight = self.a_dtype == dtypes.int8 and self.b_dtype in (dtypes.int4, dtypes.uint4)
         has_int2_weight = self.a_dtype == dtypes.int4 and self.b_dtype in (dtypes.int2, dtypes.uint2)
         has_supported_device = self.sm_version >= 75 and not current_device.is_ppu
-        return has_supported_device and not self.has_zero_point and (has_int4_weight or has_int2_weight)
+        if not has_supported_device or self.has_zero_point or not (has_int4_weight or has_int2_weight):
+            return False
+        if is_cubin_patch_enabled():
+            return True
+        if not has_int4_weight or self.sm_version < 90:
+            return False
+
+        from humming.jit.runtime import KernelRuntime
+
+        return _cuda_compiler_version(KernelRuntime._get_compiler()) >= (13, 4)
 
     @property
     def use_raw_weight(self):

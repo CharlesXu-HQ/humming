@@ -441,7 +441,7 @@ class HummingKernel(KernelRuntime, LayerConfig, ComputeConfig, TuningConfig):
         assert self.mma_b_dtype in operand_dtype_map
         assert self.sm_version >= operand_dtype_map[self.mma_b_dtype]
         if uses_undocumented_fp_operand(self.mma_a_dtype, self.mma_b_dtype):
-            err_msg = f"SM{self.sm_version} does not support E3M4/E0M3 operands"
+            err_msg = f"E3M4/E0M3 unavailable on SM{self.sm_version} or CUBIN patching is disabled"
             assert supports_undocumented_fp_dtypes(self.sm_version), err_msg
         assert self.b_dtype.num_bits <= 8
         assert self.b_dtype.num_bits <= self.a_dtype.num_bits

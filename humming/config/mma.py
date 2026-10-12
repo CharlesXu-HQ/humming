@@ -4,6 +4,7 @@ import re
 import humming.dtypes as dtypes
 from humming.config.enum import MmaType
 from humming.device import current_device
+from humming.utils.cubin import is_cubin_patch_enabled
 
 DTYPE_BIT_WIDTH_MAP = {
     "f32": 32,
@@ -46,7 +47,7 @@ UNDOCUMENTED_FP_SM_VERSIONS = (100, 103, 120, 121)
 
 
 def supports_undocumented_fp_dtypes(sm_version: int) -> bool:
-    return sm_version in UNDOCUMENTED_FP_SM_VERSIONS
+    return is_cubin_patch_enabled() and sm_version in UNDOCUMENTED_FP_SM_VERSIONS
 
 
 def uses_undocumented_fp_operand(a_dtype: dtypes.DataType, b_dtype: dtypes.DataType | None = None) -> bool:
