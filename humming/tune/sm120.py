@@ -244,7 +244,7 @@ class Sm120Heuristics(Sm89Heuristics):
         num_a_bits = layer_config.a_dtype.num_bits
         num_b_bits = layer_config.b_dtype.num_bits
         if gemm_type == GemmType.DENSE and shape_m <= block_m <= 16:
-            has_dequant_mainloop = num_a_bits < 16 and not layer_config.use_raw_weight
+            has_dequant_mainloop = num_a_bits < 16 and num_a_bits != num_b_bits
             if not config["use_stream_k"] or not has_dequant_mainloop:
                 cls._use_cp_async(config)
         elif gemm_type == GemmType.INDEXED:

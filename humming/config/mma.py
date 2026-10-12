@@ -174,11 +174,12 @@ def get_register_budget_error(layer_config, tuning_config, use_f16_accum=False, 
         return None  # UMMA accumulators use TMEM and have separate resource checks.
 
     if mma_type == MmaType.WGMMA:
+        use_wgmma_ss = layer_config.a_dtype.num_bits == layer_config.b_dtype.num_bits
         # One instruction spans project N=64 across four warps. ptxas needs
         # 26 extra registers for SS, or 30 for RS, beyond its accumulator tuple.
         # setmaxnreg can raise the runtime math budget, but not this compile limit.
         instruction_accumulators = warp_m // (4 if use_f16_accum else 2)
-        instruction_overhead = 26 if layer_config.use_raw_weight else 30
+        instruction_overhead = 26 if use_wgmma_ss else 30
         instruction_registers = instruction_accumulators + instruction_overhead
         if layer_config.use_packed_k_layout and tuning_config.wgmma_split_issue_wait:
             # Split packed-K keeps all RS K slabs live across prefetch. The
@@ -215,9 +216,9 @@ def get_register_budget_error(layer_config, tuning_config, use_f16_accum=False, 
     # 32-bit registers per thread. Count dequantized operands, not both copies.
     buffer_registers = (warp_m + warp_n) / 4
     if mma_type == MmaType.WGMMA:
-        # A is always in smem; raw-weight SS also keeps B in smem.
-        buffer_registers = 0 if layer_config.use_raw_weight else warp_n / 4
-        if not layer_config.use_raw_weight and layer_config.use_packed_k_layout:
+        # A is always in smem; SS also keeps B in smem.
+        buffer_registers = 0 if use_wgmma_ss else warp_n / 4
+        if not use_wgmma_ss and layer_config.use_packed_k_layout:
             # The packed B buffer holds one N=64 WGMMA fragment across all K slabs.
             buffer_registers = warp_k * layer_config.a_dtype.num_bits / 64
     if has_group_accumulator:

@@ -81,7 +81,7 @@ public:
 
   CUDA_INLINE
   void transform_b(uint32_t buffer_id, uint32_t iter_id) {
-    if constexpr (Ctx::kUseRawWeight || std::is_same<ElementB, ElementQB>::value) return;
+    if constexpr (Ctx::kUseWgmmaSs) return;
 
     if constexpr (kUseFusedE8m0Scale) {
       uint32_t *regs_b_ptr = reinterpret_cast<uint32_t *>(regs_b[buffer_id]);
@@ -157,7 +157,7 @@ public:
 
       PRAGMA_UNROLL
       for (uint32_t j = 0; j < kNumIters; j++) {
-        if constexpr (Ctx::kUseRawWeight) {
+        if constexpr (Ctx::kUseWgmmaSs) {
           static_assert(Ctx::kUseFlatWeight);
           uint32_t row = ctx.n_warp_id() / 4 * (WarpShape::N * 4) + j * MmaShape::N;
           if constexpr (Ctx::kUseWgmmaTmaNPermute) {

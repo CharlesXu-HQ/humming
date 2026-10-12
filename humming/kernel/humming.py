@@ -260,7 +260,8 @@ class HummingKernel(KernelRuntime, LayerConfig, ComputeConfig, TuningConfig):
             and self.a_dtype in (dtypes.float8e4m3, dtypes.float8e5m2, dtypes.float8e3m4)
             and self.b_dtype in (dtypes.float4e2m1, dtypes.float6e3m2, dtypes.float6e2m3)
         )
-        use_native_weight = self.use_raw_weight or mma_native_mixed
+        use_native_weight = self.a_dtype.num_bits == self.b_dtype.num_bits or self.use_umma_ss
+        use_native_weight |= mma_native_mixed
         use_native_weight |= self.mma_type == MmaType.MXMMA and self.mxmma_native_mixed
         if use_native_weight:
             self.mma_b_dtype = self.b_dtype

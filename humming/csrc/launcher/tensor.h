@@ -87,7 +87,7 @@ inline void check_tensor_b(Tensor &tensor, KernelData &kernel_data, int64_t dev)
 
   std::vector<int64_t> expected_shape = {};
   if (kernel_data.gemm_type_id != 0) expected_shape.push_back(kernel_data.num_experts);
-  if (kernel_data.use_raw_weight) {
+  if (kernel_data.use_raw_weight || kernel_data.use_flat_weight) {
     if (get_dtype_num_bits(kernel_data.a_dtype_id) == 8 && num_bits < 8)
       problem_shape_k = CEIL_DIV(problem_shape_k, 128) * 128;
     expected_shape.push_back(problem_shape_n);
@@ -393,10 +393,11 @@ inline CUtensorMap make_tma_desc_b(Tensor &tensor, KernelData &kernel_data) {
   if (kernel_data.use_flat_weight) {
     CUtensorMap descriptor{};
     uint64_t warp_n = kernel_data.mma_type == MmaType::WGMMA ? kernel_data.warp_shape_n : 16;
-    uint64_t total_n = uint64_t(kernel_data.problem_shape_n) * std::max(1u, kernel_data.num_experts);
+    uint64_t shape_n = kernel_data.problem_shape_n;
+    uint64_t num_experts = std::max(1u, kernel_data.num_experts);
     uint64_t row_bytes = uint64_t(tensor.size(-1)) * 4;
-    uint64_t dimensions[] = {64, 64 / warp_n, total_n / 64, warp_n / 16, row_bytes / 16};
-    uint64_t strides[] = {warp_n * 16, 64 * row_bytes, 256, 1024};
+    uint64_t dimensions[] = {64, 64 / warp_n, shape_n / 64, warp_n / 16, row_bytes / 16 * num_experts};
+    uint64_t strides[] = {warp_n * 16, 1024, 256, shape_n * 16};
     uint32_t box[] = {64, uint32_t(std::min(64u, block_shape_n) / warp_n),
         (block_shape_n + 63) / 64, uint32_t(warp_n / 16), block_shape_k * num_bits / 128};
     uint32_t element_strides[] = {1, 1, 1, 1, 1};

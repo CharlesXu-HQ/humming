@@ -62,7 +62,7 @@ public:
   }
 
   CUDA_INLINE
-  void load_raw(const int4 *smem_ptr, uint32_t *regs_ptr, uint32_t iter_id) {
+  void load_native(const int4 *smem_ptr, uint32_t *regs_ptr, uint32_t iter_id) {
     if constexpr (USE_PPU && Ctx::kUseCpAsync && !Ctx::kUseTmaB)
       return load_raw_aiu(smem_ptr, regs_ptr, iter_id);
     constexpr uint32_t kSwizzleInt4s = MIN(8u, BlockShape::K * ElementQB::kBits / 128);
@@ -95,7 +95,7 @@ public:
 
   CUDA_INLINE
   void load(const int4 *smem_ptr, uint32_t *regs_ptr, uint32_t iter_id) {
-    if constexpr (Ctx::kUseRawWeight) return load_raw(smem_ptr, regs_ptr, iter_id);
+    if constexpr (Ctx::kUseRawWeight || Ctx::kUseFlatWeight) return load_native(smem_ptr, regs_ptr, iter_id);
     if constexpr (Ctx::kUsePackedKLayout) return load_packed_k(smem_ptr, regs_ptr, iter_id);
     uint32_t warp_id = ctx.warp_id();
     uint32_t n_warp_id = ctx.n_warp_id();

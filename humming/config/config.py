@@ -133,7 +133,7 @@ class LayerConfig(BaseHummingConfig):
     @property
     def use_raw_weight(self):
         if self.a_dtype.num_bits == self.b_dtype.num_bits:
-            return True
+            return self.is_umma_supported or current_device.is_ppu
         has_native_mixed_activation = self.a_dtype in (
             dtypes.float8e4m3,
             dtypes.float8e5m2,
@@ -148,7 +148,8 @@ class LayerConfig(BaseHummingConfig):
 
     @property
     def use_flat_weight(self):
-        return self.use_raw_weight and not self.is_umma_supported and not current_device.is_ppu
+        has_same_width = self.a_dtype.num_bits == self.b_dtype.num_bits
+        return has_same_width and not self.is_umma_supported and not current_device.is_ppu
 
     @property
     def use_block_scaled_mma(self):
@@ -173,7 +174,7 @@ class LayerConfig(BaseHummingConfig):
     @property
     def use_native_dequant(self):
         assert self.sm_version is not None
-        if self.use_raw_weight or self.sm_version // 10 == 9:
+        if self.use_raw_weight or self.use_flat_weight or self.sm_version // 10 == 9:
             return False
 
         from humming.jit.runtime import KernelRuntime
@@ -384,6 +385,7 @@ class LayerConfig(BaseHummingConfig):
             can_use_packed_k = (
                 self.sm_version // 10 == 9
                 and not self.use_raw_weight
+                and not self.use_flat_weight
                 and has_packed_k_operands
                 and has_packed_k_input_scale
             )
@@ -394,7 +396,9 @@ class LayerConfig(BaseHummingConfig):
             self.use_packed_k_layout = can_use_packed_k and prefer_packed_k
         elif self.use_packed_k_layout:
             assert self.sm_version // 10 == 9, "use_packed_k_layout requires SM90"
-            assert not self.use_raw_weight, "raw weights do not use packed-K layout"
+            assert not (self.use_raw_weight or self.use_flat_weight), (
+                "raw/flat weights do not use packed-K layout"
+            )
             assert self.a_dtype.num_bits == 8, "use_packed_k_layout requires 8-bit activation"
             assert self.b_dtype.num_bits % 2 == 0, "use_packed_k_layout requires even-bit weight"
 
