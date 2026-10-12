@@ -256,6 +256,7 @@ def transform_humming_weight(
     use_packed_k_layout: bool = False,
     use_native_dequant: bool = False,
     use_raw_weight: bool = False,
+    use_flat_weight: bool = False,
 ) -> torch.Tensor:
     is_moe = weight.ndim == 3
     weight = weight.unsqueeze(0) if not is_moe else weight
@@ -295,12 +296,16 @@ def transform_humming_weight(
     if use_raw_weight or a_dtype.num_bits == b_dtype.num_bits:
         if a_dtype.num_bits == 8 and b_dtype.num_bits < 8:
             padded_shape_k = round_up(padded_shape_k, 128)
-        # K-contiguous rows are consumed directly by the shared-memory MMA operand.
         if not packed:
             weight = ops.pack_weight(weight, b_dtype.num_bits)
         weight = torch.nn.functional.pad(
             weight, (0, (padded_shape_k - shape_k) * b_dtype.num_bits // 32, 0, padded_shape_n - shape_n)
         )
+        if use_flat_weight:
+            original_shape = weight.shape
+            num_k_chunks = padded_shape_k // (packed_block_size_k // 2)
+            weight = weight.reshape(-1, padded_shape_n // 64, 64, num_k_chunks, 4)
+            weight = weight.permute(0, 1, 3, 2, 4).contiguous().reshape(original_shape)
         if current_device.is_ppu:
             # Match the even-then-odd channel order of PPU MMA's B operand.
             weight = weight.view(-1, padded_shape_n // 8, 8, weight.size(-1))
@@ -560,6 +565,7 @@ def transform_humming_tensors(
         use_packed_k_layout=config.use_packed_k_layout,
         use_native_dequant=config.use_native_dequant,
         use_raw_weight=config.use_raw_weight,
+        use_flat_weight=config.use_flat_weight,
     )
 
     if weight_scale is not None and config.bs_dtype == dtypes.float8e8m0:

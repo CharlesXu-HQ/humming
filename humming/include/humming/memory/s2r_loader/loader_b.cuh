@@ -76,6 +76,7 @@ public:
       uint32_t col = (ctx.k_warp_offset() * ElementQB::kBits / 256 + iter_id) * 2 + (lane_id / 8) % 2;
       uint32_t offset = (col / kSwizzleInt4s * BlockShape::N + row) * kSwizzleInt4s + col % kSwizzleInt4s;
       uint32_t swizzled_offset = offset ^ ((smem_base + offset / 8) % kSwizzleInt4s);
+      if constexpr (Ctx::kUseFlatWeight) swizzled_offset = col * BlockShape::N + row;
       ld_shared<kRowsPerLoad / 4>(smem_ptr + swizzled_offset, reinterpret_cast<int4 *>(regs_ptr + n * kRowsPerLoad / 4));
     }
   }

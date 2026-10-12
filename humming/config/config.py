@@ -80,6 +80,7 @@ class LayerConfig(BaseHummingConfig):
         "is_token_input_scale_2",
         "is_tensor_input_scale_2",
         "use_raw_weight",
+        "use_flat_weight",
         "use_native_dequant",
         "use_block_scaled_mma",
         "mma_scale_group_size",
@@ -144,6 +145,10 @@ class LayerConfig(BaseHummingConfig):
             dtypes.float6e2m3,
         )
         return has_native_mixed_activation and has_native_mixed_weight and self.is_umma_supported
+
+    @property
+    def use_flat_weight(self):
+        return self.use_raw_weight and not self.is_umma_supported and not current_device.is_ppu
 
     @property
     def use_block_scaled_mma(self):

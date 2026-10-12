@@ -158,18 +158,16 @@ public:
       PRAGMA_UNROLL
       for (uint32_t j = 0; j < kNumIters; j++) {
         if constexpr (Ctx::kUseRawWeight) {
-          constexpr uint32_t kSwizzleK = kSwizzleBytes * 8 / ElementQB::kBits;
+          static_assert(Ctx::kUseFlatWeight);
           uint32_t row = ctx.n_warp_id() / 4 * (WarpShape::N * 4) + j * MmaShape::N;
           if constexpr (Ctx::kUseWgmmaTmaNPermute) {
             constexpr uint32_t kFragmentPlaneRows = BlockShape::N / WarpShape::N * 16;
             row = ctx.n_warp_id() / 4 * MmaShape::N + j * kFragmentPlaneRows;
           }
           uint32_t col = ctx.k_warp_offset() + k_slab * kPartMmaShapeK;
-          uint32_t offset = (col / kSwizzleK * BlockShape::N + row) * kSwizzleBytes;
-          offset += col % kSwizzleK * ElementQB::kBits / 8;
+          uint32_t offset = (col * ElementQB::kBits / 128 * BlockShape::N + row) * 16;
           const uint32_t b_addr = stage_addr + offsetof(typename SharedStorage::StageStorage, b);
-          uint64_t b_desc = make_wgmma_smem_desc<kSwizzleBytes>(b_addr);
-          reinterpret_cast<uint32_t *>(&b_desc)[0] += offset / 16;
+          uint64_t b_desc = (uint64_t(b_addr + offset) >> 4) | (uint64_t(BlockShape::N) << 16) | (uint64_t(8) << 32);
           MmaOpClass::fma(desc, b_desc, regs_c[0][delta_j + j][0], scale_d);
         } else {
           MmaOpClass::fma(desc, regs_b[buffer_id][j][k], regs_c[0][delta_j + j][0], scale_d);

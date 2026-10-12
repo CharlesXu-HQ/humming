@@ -179,6 +179,7 @@ struct KernelData {
   bool use_packed_k_layout;
   bool use_umma_ss;
   bool use_raw_weight;
+  bool use_flat_weight;
   bool use_block_scaled_mma;
 };
 
