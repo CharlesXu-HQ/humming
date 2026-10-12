@@ -66,7 +66,6 @@ def _is_legal_mma_type(layer_config, compute_config, mma_type):
     has_mixed_raw_weights = (
         layer_config.use_raw_weight and layer_config.a_dtype.num_bits != layer_config.b_dtype.num_bits
     )
-    has_mixed_raw_weights &= not layer_config.use_ldmatrix_dequant
     if has_mixed_raw_weights and mma_type != MmaType.UMMA:
         return False
     if mma_type == MmaType.UMMA:
@@ -290,8 +289,7 @@ def _generate_transfer_candidates(
                 continue
             if signature["multi_cast_size_a"] != 1 or signature["multi_cast_size_b"] != 1:
                 continue
-            use_umma_ss = layer_config.use_raw_weight and not layer_config.use_ldmatrix_dequant
-            if use_umma_ss and not tma_values["use_tma_b"]:
+            if layer_config.use_raw_weight and not tma_values["use_tma_b"]:
                 continue
             tma_values["use_tma_as2"] = False
         config = base | signature | tma_values | {"use_tma": use_tma}
@@ -327,8 +325,7 @@ def _generate_scheduling_candidates(
     for signature in _generate_cartesian(*names):
         signature = {"mma_type": mma_type.value} | signature
         if mma_type == MmaType.UMMA:
-            use_umma_ss = layer_config.use_raw_weight and not layer_config.use_ldmatrix_dequant
-            if use_umma_ss and signature["umma_num_dequant_warpgroups"] != 1:
+            if layer_config.use_raw_weight and signature["umma_num_dequant_warpgroups"] != 1:
                 continue
             if signature["umma_cta_group_size"] == 2:
                 if signature["num_ctas_per_sm"] != 1:
@@ -396,8 +393,7 @@ def _fits_device_resources(
     num_math_threads = m_warps * n_warps * k_warps * 32
     num_threads = num_math_threads + (128 if config["use_warp_spec"] else 0)
     if mma_type == MmaType.UMMA:
-        use_umma_ss = layer_config.use_raw_weight and not layer_config.use_ldmatrix_dequant
-        dequant_threads = 0 if use_umma_ss else 128 * config["umma_num_dequant_warpgroups"]
+        dequant_threads = 0 if layer_config.use_raw_weight else 128 * config["umma_num_dequant_warpgroups"]
         num_threads = 256 + dequant_threads
     num_ctas_per_sm = config["num_ctas_per_sm"]
     max_threads = current_device.max_threads_per_sm
@@ -449,8 +445,7 @@ def _try_combine_candidate(
             if block_shape[0] % 16 or layer_config.shape_n % (2 * block_shape[1]):
                 return None
         num_math_threads = 128
-        use_umma_ss = layer_config.use_raw_weight and not layer_config.use_ldmatrix_dequant
-        dequant_threads = 0 if use_umma_ss else 128 * config["umma_num_dequant_warpgroups"]
+        dequant_threads = 0 if layer_config.use_raw_weight else 128 * config["umma_num_dequant_warpgroups"]
         num_threads = 256 + dequant_threads
     if num_threads > 1024:
         return None

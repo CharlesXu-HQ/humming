@@ -301,7 +301,7 @@ def transform_humming_weight(
         sign_mask = sum(1 << bit for bit in range(b_dtype.num_bits - 1, 32, b_dtype.num_bits))
         weight = weight ^ (sign_mask - (1 << 32))
 
-    if use_raw_weight or a_dtype.num_bits == b_dtype.num_bits:
+    if use_raw_weight or use_flat_weight or a_dtype.num_bits == b_dtype.num_bits:
         if not use_ldmatrix_dequant and a_dtype.num_bits == 8 and b_dtype.num_bits < 8:
             padded_shape_k = round_up(padded_shape_k, 128)
         if not packed:
@@ -313,7 +313,7 @@ def transform_humming_weight(
             original_shape = weight.shape
             num_k_chunks = padded_shape_k * b_dtype.num_bits // 128
             weight = weight.reshape(-1, padded_shape_n // 64, 64, num_k_chunks, 4)
-            weight = weight.permute(0, 1, 3, 2, 4).contiguous().reshape(original_shape)
+            weight = weight.permute(0, 3, 1, 2, 4).contiguous().reshape(original_shape)
         if current_device.is_ppu:
             # Match the even-then-odd channel order of PPU MMA's B operand.
             weight = weight.view(-1, padded_shape_n // 8, 8, weight.size(-1))

@@ -274,7 +274,8 @@ class HummingKernel(KernelRuntime, LayerConfig, ComputeConfig, TuningConfig):
             and self.a_dtype in (dtypes.float8e4m3, dtypes.float8e5m2, dtypes.float8e3m4)
             and self.b_dtype in (dtypes.float4e2m1, dtypes.float6e3m2, dtypes.float6e2m3)
         )
-        use_native_weight = (self.use_raw_weight and not self.use_ldmatrix_dequant) or mma_native_mixed
+        use_native_weight = self.a_dtype.num_bits == self.b_dtype.num_bits or self.use_umma_ss
+        use_native_weight |= mma_native_mixed
         use_native_weight |= self.mma_type == MmaType.MXMMA and self.mxmma_native_mixed
         if use_native_weight:
             self.mma_b_dtype = self.b_dtype
@@ -512,7 +513,7 @@ class HummingKernel(KernelRuntime, LayerConfig, ComputeConfig, TuningConfig):
         if self.mma_type == MmaType.WGMMA:
             assert self.sm_version == 90, "WGMMA requires SM90"
         has_mixed_raw_weights = self.use_raw_weight and self.a_dtype.num_bits != self.b_dtype.num_bits
-        if has_mixed_raw_weights and not self.use_ldmatrix_dequant:
+        if has_mixed_raw_weights:
             assert self.mma_type == MmaType.UMMA, "mixed raw weights require UMMA SS"
         assert self.num_threads <= 1024
         if self.gemm_type is None and self.num_experts == 0:

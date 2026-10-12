@@ -239,7 +239,7 @@ public:
   static constexpr bool kUseWarpSpec = TuningConfig::kUseWarpSpec;
   struct StageStorage {
     alignas(1024) int4 a[kStageSizeA];
-    alignas(LayerConfig::kUseRawWeight ? 1024 : 128) int4 b[kStageSizeB];
+    alignas(LayerConfig::kUseRawWeight || LayerConfig::kUseFlatWeight ? 1024 : 128) int4 b[kStageSizeB];
     IF_HAS_STAGE_INPUT_SCALE(alignas(128) int4 as[kStageSizeAS];)
     IF_HAS_STAGE_WEIGHT_SCALE(alignas(128) int4 bs[kStageSizeBS];)
     IF_HAS_STAGE_ZERO_POINT(alignas(128) int4 bzp[kStageSizeBZP];)

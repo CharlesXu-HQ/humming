@@ -29,6 +29,7 @@ def fit_sm90_tile(
     gemm_type: GemmType = GemmType.DENSE,
     use_m_major_input_scale: bool = False,
 ) -> dict:
+    use_wgmma_ss = layer_config.a_dtype.num_bits == layer_config.b_dtype.num_bits
     config = config.copy()
     requested_ctas = config.get("num_ctas_per_sm", 1)
     block_m, block_n, block_k = config["block_shape"]
@@ -42,7 +43,6 @@ def fit_sm90_tile(
     has_weight_scale_accumulator = has_group_weight_scale and not layer_config.use_fused_e8m0_scale
     has_scaled_accumulator = layer_config.is_group_input_scale or has_weight_scale_accumulator
     has_group_accumulator = layer_config.a_dtype.num_bits < 16 and has_scaled_accumulator
-    use_wgmma_ss = layer_config.use_raw_weight and not layer_config.use_ldmatrix_dequant
     has_unpacked_rs = not use_wgmma_ss and not layer_config.use_packed_k_layout
     should_widen_rs = has_unpacked_rs and has_group_accumulator and not use_warp_spec and warp_n < 32
     if mma_type == MmaType.WGMMA and should_widen_rs and layer_config.shape_n % 128 == 0:
@@ -243,11 +243,11 @@ def get_compact_scaled_moe_config(
     use_m_major_input_scale: bool = False,
     expert_probability_cv: float = DeviceHeuristics.expert_probability_cv,
 ) -> dict | None:
+    use_wgmma_ss = layer_config.a_dtype.num_bits == layer_config.b_dtype.num_bits
     if gemm_type == GemmType.DENSE or use_f16_accum or use_batch_invariant:
         return None
     if layer_config.a_dtype.num_bits != 8 or layer_config.use_packed_k_layout:
         return None
-    use_wgmma_ss = layer_config.use_raw_weight and not layer_config.use_ldmatrix_dequant
     if use_wgmma_ss or layer_config.shape_n % 64 or layer_config.shape_k % 64:
         return None
     has_short_k = layer_config.shape_k <= 512
@@ -361,16 +361,16 @@ def get_overlap_config(
     expert_probability_cv: float = DeviceHeuristics.expert_probability_cv,
 ) -> dict | None:
     layer = layer_config
+    use_wgmma_ss = layer.a_dtype.num_bits == layer.b_dtype.num_bits
     is_dense = gemm_type == GemmType.DENSE
     is_masked = gemm_type == GemmType.GROUPED_MASKED
     is_a16 = layer.a_dtype.num_bits == 16
-    use_wgmma_ss = layer.use_raw_weight and not layer.use_ldmatrix_dequant
     is_unpacked_a8 = layer.a_dtype.num_bits == 8 and not use_wgmma_ss and not layer.use_packed_k_layout
     can_overlap_a16 = is_a16 and not is_dense and (not is_h20 or is_masked) and layer.b_dtype.num_bits < 16
     can_overlap_packed = layer.use_packed_k_layout and not is_h20 and (not is_dense or shape_m <= 64)
     can_overlap_block = use_wgmma_ss and layer.is_block_weight_scale and not is_dense and not is_h20
-    can_overlap_small_raw = use_wgmma_ss and is_dense and not is_h20 and shape_m <= 64
-    has_a8_schedule = is_unpacked_a8 or can_overlap_packed or can_overlap_block or can_overlap_small_raw
+    can_overlap_small_ss = use_wgmma_ss and is_dense and not is_h20 and shape_m <= 64
+    has_a8_schedule = is_unpacked_a8 or can_overlap_packed or can_overlap_block or can_overlap_small_ss
     if not (can_overlap_a16 or (layer.a_dtype.num_bits == 8 and has_a8_schedule)):
         return None
     if use_f16_accum or use_batch_invariant or layer.shape_k <= 512:
@@ -499,6 +499,7 @@ def get_short_k_config(
     is_h20: bool = False,
     use_m_major_input_scale: bool = False,
 ) -> dict | None:
+    use_wgmma_ss = layer_config.a_dtype.num_bits == layer_config.b_dtype.num_bits
     if gemm_type != GemmType.DENSE or use_f16_accum or use_batch_invariant:
         return None
     if layer_config.a_dtype.num_bits != 8 or layer_config.shape_k > 512:
@@ -507,7 +508,6 @@ def get_short_k_config(
         return None
     if get_problem_rejection_reasons(layer_config, MmaType.WGMMA):
         return None
-    use_wgmma_ss = layer_config.use_raw_weight and not layer_config.use_ldmatrix_dequant
     if is_h20 and use_wgmma_ss and layer_config.shape_k > 256 and shape_m > 64:
         return None
     if layer_config.use_fused_e8m0_scale and layer_config.use_packed_k_layout and shape_m > 64:
@@ -852,6 +852,7 @@ def select_grouped_scale(
     problem: TuningProblem,
 ) -> TuningDecision:
     layer_config = problem.layer_config
+    use_wgmma_ss = layer_config.a_dtype.num_bits == layer_config.b_dtype.num_bits
     if problem.use_f16_accum:
         max_block_m = 256
     elif layer_config.input_scale_group_size > 0:
@@ -875,7 +876,6 @@ def select_grouped_scale(
 
     candidates = []
     # Candidate order records measured preference; legality supplies fallbacks.
-    use_wgmma_ss = layer_config.use_raw_weight and not layer_config.use_ldmatrix_dequant
     tile_shapes = ((128, 32), (128, 16), (64, 16)) if use_wgmma_ss else ((128, 32), (64, 16))
     for block_shape_n, warp_shape_n in tile_shapes:
         for block_shape_k in block_ks:
@@ -967,8 +967,8 @@ def get_scaled_a8_config(
     use_m_major_input_scale: bool = False,
     expert_probability_cv: float = DeviceHeuristics.expert_probability_cv,
 ) -> dict | None:
-    has_raw_w8a8 = layer_config.a_dtype.num_bits == 8 and layer_config.a_dtype == layer_config.b_dtype
-    use_wgmma_ss = layer_config.use_raw_weight and not layer_config.use_ldmatrix_dequant
+    use_wgmma_ss = layer_config.a_dtype.num_bits == layer_config.b_dtype.num_bits
+    has_native_w8a8 = layer_config.a_dtype.num_bits == 8 and layer_config.a_dtype == layer_config.b_dtype
     has_unpacked_weights = (
         layer_config.a_dtype.num_bits == 8
         and not use_wgmma_ss
@@ -976,7 +976,7 @@ def get_scaled_a8_config(
         and not layer_config.is_group_input_scale
         and layer_config.shape_k > 512
     )
-    if not (has_raw_w8a8 or has_unpacked_weights):
+    if not (has_native_w8a8 or has_unpacked_weights):
         return None
     if use_f16_accum or use_batch_invariant:
         return None

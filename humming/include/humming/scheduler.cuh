@@ -120,8 +120,7 @@ public:
       streamk_mnk_total_iters = MAX(streamk_mnk_total_iters, kMinSliceIters);
 
       constexpr int32_t bpg = kStreamKBlockAlignment;
-      constexpr int32_t stage_alignment = Ctx::kUseFlatWeight && Ctx::LayerConfig::kSmVersion == 80 ? 1 : kNumStages;
-      constexpr int32_t align_iters = bpg / ct_gcd(bpg, stage_alignment) * stage_alignment;
+      constexpr int32_t align_iters = bpg / ct_gcd(bpg, kNumStages) * kNumStages;
       if constexpr (align_iters > 1) {
         streamk_mnk_total_iters = align_iters * CEIL_DIV(streamk_mnk_total_iters, align_iters);
       };

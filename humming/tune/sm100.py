@@ -145,10 +145,9 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
 
     @staticmethod
     def _get_tmem_columns(layer_config, block_shape, num_stages, num_ctas_per_sm, cta_group_size=1):
-        use_umma_ss = layer_config.use_raw_weight and not layer_config.use_ldmatrix_dequant
         block_m, block_n, block_k = block_shape
         output_groups = block_n // 128
-        operand_columns = 0 if use_umma_ss else block_k * layer_config.a_dtype.num_bits // 32
+        operand_columns = 0 if layer_config.use_raw_weight else block_k * layer_config.a_dtype.num_bits // 32
         constant_scale_columns = 0
         if layer_config.use_block_scaled_mma:
             scale_group_size = layer_config.mma_scale_group_size
@@ -162,12 +161,12 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
                 constant_scale_columns = 16
             operand_columns = round_up(operand_columns, 16)
         accumulator_columns = (
-            round_up(block_m, 32) if use_umma_ss and cta_group_size == 2 else block_m
+            round_up(block_m, 32) if layer_config.use_raw_weight and cta_group_size == 2 else block_m
         )
-        buffers = 1 if use_umma_ss else (4 if cta_group_size == 2 else num_stages)
+        buffers = 1 if layer_config.use_raw_weight else (4 if cta_group_size == 2 else num_stages)
         columns = constant_scale_columns + output_groups * (buffers * operand_columns + accumulator_columns)
         tmem_columns = 1 << (columns - 1).bit_length()
-        if not use_umma_ss and tmem_columns * num_ctas_per_sm > 512:
+        if not layer_config.use_raw_weight and tmem_columns * num_ctas_per_sm > 512:
             # TS falls back to two operand buffers; SS copies scales on the
             # issuer stream and needs only one, independently of stage count.
             columns = constant_scale_columns + output_groups * (2 * operand_columns + accumulator_columns)
@@ -349,11 +348,10 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
 
     @classmethod
     def _select_cooperative_ctas(cls, layer_config, shape_m, config, use_m_major_input_scale=False):
-        use_umma_ss = layer_config.use_raw_weight and not layer_config.use_ldmatrix_dequant
         activation_bits = layer_config.a_dtype.num_bits
         is_low_bit = activation_bits < 16
         # Low-bit cooperative instructions take native operands only.
-        if is_low_bit and not use_umma_ss:
+        if is_low_bit and not layer_config.use_raw_weight:
             return config
         block_m, block_n, block_k = config["block_shape"]
         has_cooperative_tile = block_m >= 128 and block_m % 32 == 0
@@ -424,7 +422,7 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
     @classmethod
     def _select_dequant_warpgroups(cls, layer_config, shape_m, config):
         # Native conversion keeps up with one warpgroup; register dequantization does not.
-        if layer_config.use_raw_weight or layer_config.use_native_dequant:
+        if layer_config.use_raw_weight or layer_config.use_flat_weight or layer_config.use_native_dequant:
             return config
         # Aligned integers convert to FP16/BF16 with one logic op and one subtraction.
         a_dtype, b_dtype = layer_config.a_dtype, layer_config.b_dtype
@@ -514,7 +512,8 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
                         # For a single short wave, cp.async avoids TMA setup
                         # without sacrificing overlap across persistent tiles.
                         is_short_wave = output_tiles <= resident_ctas and k_iters <= num_stages
-                        use_tma = layer_config.use_raw_weight or not is_short_wave
+                        use_tma = layer_config.use_raw_weight or layer_config.use_flat_weight
+                        use_tma |= not is_short_wave
                         config = {
                             "mma_type": MmaType.UMMA.value,
                             "block_shape": block_shape,
@@ -552,7 +551,6 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
     def _get_moe_candidates(
         cls, layer_config: LayerConfig, gemm_type: GemmType, use_m_major_input_scale: bool = False
     ) -> tuple:
-        use_umma_ss = layer_config.use_raw_weight and not layer_config.use_ldmatrix_dequant
         candidates = []
         indexed = gemm_type == GemmType.INDEXED
         for block_n in (256, 128):
@@ -564,19 +562,19 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
                 if layer_config.shape_k % block_k:
                     continue
                 k_iters = layer_config.shape_k // block_k
-                residency_choices = (2, 1) if block_n == 256 or use_umma_ss else (2,)
+                residency_choices = (2, 1) if block_n == 256 or layer_config.use_raw_weight else (2,)
                 for num_ctas in residency_choices:
                     operand_columns = (
-                        0 if use_umma_ss else block_k * layer_config.a_dtype.num_bits // 32
+                        0 if layer_config.use_raw_weight else block_k * layer_config.a_dtype.num_bits // 32
                     )
                     max_block_m = min(256, 512 // (output_groups * num_ctas) - 2 * operand_columns)
                     min_stages = min(3, max(2, k_iters))
-                    max_stages = min(5 if use_umma_ss else 4, max(2, k_iters))
-                    can_cooperate = use_umma_ss and num_ctas == 1
+                    max_stages = min(5 if layer_config.use_raw_weight else 4, max(2, k_iters))
+                    can_cooperate = layer_config.use_raw_weight and num_ctas == 1
                     can_cooperate &= layer_config.shape_n % (2 * block_n) == 0
                     for cta_group_size in (1, 2) if can_cooperate else (1,):
                         for block_m in range(8 * cta_group_size, max_block_m + 1, 8 * cta_group_size):
-                            use_chunks = use_umma_ss and (block_m > 32 or cta_group_size == 2)
+                            use_chunks = layer_config.use_raw_weight and (block_m > 32 or cta_group_size == 2)
                             output_chunk_rows = 32 if use_chunks else 0
                             shape = (block_m, block_n, block_k)
                             for stages in range(max_stages, min_stages - 1, -1):
@@ -608,7 +606,7 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
                                     "use_pdl": False,
                                     "raster_group_m": 1,
                                 }
-                                if use_umma_ss:
+                                if layer_config.use_raw_weight:
                                     config.update(
                                         umma_cta_group_size=cta_group_size,
                                         output_chunk_rows=output_chunk_rows,
@@ -628,7 +626,6 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
         gemm_type: GemmType = GemmType.INDEXED,
         use_m_major_input_scale: bool = False,
     ) -> dict:
-        use_umma_ss = layer_config.use_raw_weight and not layer_config.use_ldmatrix_dequant
         if not layer_config.num_experts or gemm_type == GemmType.DENSE:
             raise ValueError("UMMA MoE requires an expert GEMM")
         if shape_m <= 0:
@@ -643,7 +640,7 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
         for config in cls._get_moe_candidates(layer_config, gemm_type, use_m_major_input_scale):
             block_m, block_n, block_k = config["block_shape"]
             num_ctas = config["num_ctas_per_sm"]
-            if use_umma_ss and num_ctas == 1 and typical_expert_rows < block_m:
+            if layer_config.use_raw_weight and num_ctas == 1 and typical_expert_rows < block_m:
                 # Give up the second resident CTA only when a typical expert
                 # fills the wider M tile, rather than mostly padding it.
                 continue
@@ -763,7 +760,6 @@ class Sm100Heuristics(Sm100MmaHeuristics):
             has_mixed_raw_weights = layer_config.use_raw_weight and (
                 layer_config.a_dtype.num_bits != layer_config.b_dtype.num_bits
             )
-            has_mixed_raw_weights &= not layer_config.use_ldmatrix_dequant
             requires_umma |= has_mixed_raw_weights
             if use_f16_accum and has_mixed_raw_weights:
                 raise ValueError("native mixed weight layout requires UMMA with FP32 accumulation")
