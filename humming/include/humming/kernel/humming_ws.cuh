@@ -189,6 +189,9 @@ __global__ __launch_bounds__(TuningConfig::kNumThreads, TuningConfig::kNumCtasPe
           if (warp_iter_id == Ctx::kWarpIters - 1 && slice_iter + 1 < num_slice_iters) {
             consumer.wait_stage((stage_id + 1) % kNumStages);
           }
+          if constexpr (!Ctx::kUseWgmma) {
+            if (warp_iter_id == Ctx::kWarpIters - 1) consumer.arrive(stage_id);
+          }
           const bool use_late_scale_prefetch = Ctx::kUseWgmmaLateScalePrefetch && warp_iter_id == Ctx::kWarpIters - 1;
           const bool has_next_fragment = warp_iter_id + 1 < Ctx::kWarpIters || slice_iter + 1 < num_slice_iters;
           if (has_next_fragment) {
@@ -208,7 +211,9 @@ __global__ __launch_bounds__(TuningConfig::kNumThreads, TuningConfig::kNumCtasPe
                 ((warp_iter_id + 1) % Ctx::kWarpIters) % 2,
                 (warp_iter_id + 1) % Ctx::kWarpIters);
           }
-          if (warp_iter_id == Ctx::kWarpIters - 1) consumer.arrive(stage_id);
+          if constexpr (Ctx::kUseWgmma) {
+            if (warp_iter_id == Ctx::kWarpIters - 1) consumer.arrive(stage_id);
+          }
         }
       };
 
