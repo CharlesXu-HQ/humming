@@ -133,6 +133,24 @@ def get_mxmma_compiler_error(layer_config, compiler_version):
     return None
 
 
+def get_warp_spec_registers(layer_config, tuning_config, registers_per_sm=None):
+    if registers_per_sm is None:
+        registers_per_sm = current_device.max_registers_per_sm
+    num_math_threads = math.prod(tuning_config.block_shape) // math.prod(tuning_config.warp_shape) * 32
+    num_threads = num_math_threads + 128
+    launch_budget = registers_per_sm // (num_threads * tuning_config.num_ctas_per_sm) // 8 * 8
+    producer_registers = tuning_config.producer_registers
+    if producer_registers is None:
+        needs_more_load_registers = tuning_config.num_ctas_per_sm == 1 and layer_config.a_dtype.num_bits != 16
+        needs_more_load_registers |= num_math_threads > 256
+        producer_registers = 40 if needs_more_load_registers else 24
+    available_registers = launch_budget * num_threads - producer_registers * 128
+    consumer_registers = min(248, available_registers // num_math_threads // 8 * 8)
+    if producer_registers > launch_budget or consumer_registers < producer_registers:
+        raise ValueError("register budget exceeded: producer allocation cannot fit the launch budget")
+    return producer_registers, consumer_registers
+
+
 def get_register_budget_error(layer_config, tuning_config, use_f16_accum=False, registers_per_sm=None):
     mma_type = tuning_config.mma_type or get_default_mma_type(layer_config)
     if registers_per_sm is None:
@@ -182,19 +200,10 @@ def get_register_budget_error(layer_config, tuning_config, use_f16_accum=False, 
         has_group_accumulator = has_group_scale
     math_budget = min(255, launch_budget)
     if tuning_config.use_warp_spec:
-        # Match humming_ws.cuh's allocation, using the full physical accumulator
-        # count for its preferred budget, independently of our spill estimate.
-        physical_accumulators = accumulator_registers * (2 if has_group_accumulator else 1)
-        preferred_budget = min(232, max(128, physical_accumulators * 2 + 96))
-        preferred_budget = math.ceil(preferred_budget / 8) * 8
-        needs_more_load_registers = num_math_threads > 256 or (
-            tuning_config.num_ctas_per_sm == 1 and layer_config.a_dtype.num_bits != 16
-        )
-        load_registers = 40 if needs_more_load_registers else 24
-        available_registers = launch_budget * (num_math_threads + 128) - load_registers * 128
-        if num_math_threads > 256:
-            preferred_budget = 96
-        math_budget = min(preferred_budget, max(24, available_registers // num_math_threads // 8 * 8))
+        try:
+            _, math_budget = get_warp_spec_registers(layer_config, tuning_config, registers_per_sm)
+        except ValueError as error:
+            return str(error)
 
     if math_budget < 56:
         return (
@@ -212,7 +221,7 @@ def get_register_budget_error(layer_config, tuning_config, use_f16_accum=False, 
             # The packed B buffer holds one N=64 WGMMA fragment across all K slabs.
             buffer_registers = warp_k * layer_config.a_dtype.num_bits / 64
     if has_group_accumulator:
-        partial_accumulator_registers = accumulator_registers * 0.25
+        partial_accumulator_registers = accumulator_registers * 0.5
         if mma_type == MmaType.WGMMA:
             partial_accumulator_registers = max(partial_accumulator_registers, instruction_accumulators)
             if layer_config.a_dtype.is_integer_type or tuning_config.wgmma_split_issue_wait:

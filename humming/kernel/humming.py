@@ -24,6 +24,7 @@ from humming.config.mma import (
     get_mxmma_compiler_error,
     get_mxmma_scale_config,
     get_register_budget_error,
+    get_warp_spec_registers,
     supports_undocumented_fp_dtypes,
     uses_undocumented_fp_operand,
 )
@@ -146,6 +147,8 @@ class HummingKernel(KernelRuntime, LayerConfig, ComputeConfig, TuningConfig):
             use_wide_async_load = not self.use_tma_a and activation_bytes >= 12 * 1024
             use_wide_async_load &= not self.use_umma_ss
             self.num_load_threads = 96 if use_wide_async_load else 64
+        elif self.use_warp_spec:
+            self.producer_registers, self.consumer_registers = get_warp_spec_registers(self, self)
         KernelRuntime.__post_init__(self)
 
     def init_kernel(self) -> None:

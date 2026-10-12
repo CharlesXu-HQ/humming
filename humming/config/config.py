@@ -499,14 +499,13 @@ class TuningConfig(BaseHummingConfig):
 
     use_stream_k: bool = True
 
-    # WGMMA mainloop scheduling; independent of the packed weight layout.
     wgmma_use_late_as: bool = False
     wgmma_split_issue_wait: bool = False
 
     num_stages: int = 2
-    # None uses num_stages when the tuning config is initialized.
     producer_stage_unroll: int | None = None
     consumer_stage_unroll: int | None = None
+    producer_registers: int | None = None
     num_ctas_per_sm: int = 1
     umma_num_dequant_warpgroups: int = 1
     umma_cta_group_size: int = 1
@@ -539,6 +538,7 @@ class TuningConfig(BaseHummingConfig):
         "num_threads",
         "num_math_threads",
         "num_load_threads",
+        "consumer_registers",
         "smem_reuse_mode_id",
     )
 
@@ -588,6 +588,12 @@ class TuningConfig(BaseHummingConfig):
             value = getattr(self, name)
             if value is not None and (type(value) is not int or value < 1):
                 raise ValueError(f"{name} must be None or a positive integer")
+        producer_registers = self.producer_registers
+        if producer_registers is not None:
+            is_valid = type(producer_registers) is int and 24 <= producer_registers <= 248
+            if not is_valid or producer_registers % 8:
+                raise ValueError("producer_registers must be None or a multiple of 8 between 24 and 248")
+        self.consumer_registers: int | None = None
         if self.producer_stage_unroll is None:
             self.producer_stage_unroll = self.num_stages
         if self.consumer_stage_unroll is None:

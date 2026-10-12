@@ -20,6 +20,7 @@ SAMPLED_TUNING_VALUES = {
     "num_stages": (2, 3, 4, 5, 6, 8),
     "producer_stage_unroll": (None, 1, 2),
     "consumer_stage_unroll": (None, 1, 2),
+    "producer_registers": (None, 40, 64, 96),
     "wgmma_use_late_as": (False, True),
     "wgmma_split_issue_wait": (False, True),
     "use_tma": (True, False, 123, 456, 789),
@@ -429,6 +430,9 @@ def _try_combine_candidate(
         config.update(item_config)
         signature.update(item_signature)
     mma_type = MmaType(config["mma_type"])
+    if not config["use_warp_spec"]:
+        config.pop("producer_registers", None)
+        signature.pop("producer_registers", None)
     block_shape = config["block_shape"]
     warp_shape = config["warp_shape"]
     m_warps = block_shape[0] // warp_shape[0]
@@ -473,12 +477,15 @@ def _enumerate_backend_candidates(
     sample_size: int,
 ) -> list[tuple[dict, dict]]:
     rng = random.Random(_get_seed(layer_config, compute_config))
-    unroll_candidates = _generate_cartesian("producer_stage_unroll", "consumer_stage_unroll")
+    pipeline_options = ("producer_stage_unroll", "consumer_stage_unroll")
+    if mma_type != MmaType.UMMA:
+        pipeline_options += ("producer_registers",)
+    pipeline_candidates = _generate_cartesian(*pipeline_options)
     groups = (
         _generate_geometry_candidates(layer_config, compute_config, mma_type),
         _generate_transfer_candidates(layer_config, compute_config, mma_type),
         _generate_scheduling_candidates(layer_config, compute_config, mma_type),
-        [(config, config) for config in unroll_candidates],
+        [(config, config) for config in pipeline_candidates],
     )
     candidates = []
     signatures = set()

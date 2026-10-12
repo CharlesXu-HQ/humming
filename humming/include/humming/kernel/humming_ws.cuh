@@ -23,27 +23,6 @@ public:
 CUDA_INLINE const void *param_to_ptr(const CUtensorMap &x) { return &x; }
 CUDA_INLINE const void *param_to_ptr(void *const &x) { return x; }
 
-template <class Ctx, class MMA>
-struct WarpSpecializationRegisterAllocation {
-  using TuningConfig = typename Ctx::TuningConfig;
-  using ElementA = typename Ctx::ElementA;
-
-  static constexpr uint32_t kLoadThreadRegisters = TuningConfig::kNumMathThreads > 256 || (TuningConfig::kNumCtasPerSm == 1 && ElementA::kBits != 16) ? 40 : 24;
-  static constexpr uint32_t kAccumulatorRegistersPerThread = sizeof(typename MMA::CRegistersArrayType) / sizeof(uint32_t) * (MMA::final_regs_c_index() + 1);
-  static constexpr uint32_t kEstimatedMathThreadRegisters = MIN(232, MAX(128, kAccumulatorRegistersPerThread * 2 + 96));
-  // setmaxnreg requires multiples of eight; the physical budget below is rounded down.
-  static constexpr uint32_t kPreferredMathThreadRegisters = TuningConfig::kNumMathThreads > 256 ? 96 : CEIL_DIV(kEstimatedMathThreadRegisters, 8) * 8;
-  static constexpr uint32_t kNumWarps = TuningConfig::kNumThreads / 32;
-  static constexpr uint32_t kRegisterAllocationGranularityPerWarp = 256;
-  static constexpr uint32_t kRegisterBudgetPerWarp =
-      (64 * 1024) / (kNumWarps * TuningConfig::kNumCtasPerSm) /
-      kRegisterAllocationGranularityPerWarp * kRegisterAllocationGranularityPerWarp;
-  static constexpr uint32_t kRegisterBudgetPerCta = kRegisterBudgetPerWarp * kNumWarps;
-  static constexpr uint32_t kLoadThreadRegisterUsage = TuningConfig::kNumLoadThreads * kLoadThreadRegisters;
-  static constexpr uint32_t kRegistersAvailableForMath = kRegisterBudgetPerCta > kLoadThreadRegisterUsage ? kRegisterBudgetPerCta - kLoadThreadRegisterUsage : 0;
-  static constexpr uint32_t kMathThreadRegisters = MIN(kPreferredMathThreadRegisters, MAX(24, kRegistersAvailableForMath / TuningConfig::kNumMathThreads / 8 * 8));
-};
-
 template <
     class MmaOpClass,
     class ProblemShape, class BlockShape, class WarpShape, class PadShape,
@@ -90,7 +69,6 @@ __global__ __launch_bounds__(TuningConfig::kNumThreads, TuningConfig::kNumCtasPe
   using MMA = Mma<Ctx, MainloopArithmetic>;
   using Epilogue = EpiloguePipeline<Ctx, MMA, EpilogueArithmetic>;
   using S2RMemoryPipeline = S2RMemoryPipeline<Ctx, MMA, Epilogue>;
-  using RegisterAllocation = WarpSpecializationRegisterAllocation<Ctx, MMA>;
 
   extern __shared__ int4 shared_memory[];
   auto &smem = *reinterpret_cast<SharedStorage *>(shared_memory);
@@ -111,7 +89,7 @@ __global__ __launch_bounds__(TuningConfig::kNumThreads, TuningConfig::kNumCtasPe
   bool pdl_waited = false;
 
   if (ctx.is_load_thread()) {
-    asm volatile("setmaxnreg.dec.sync.aligned.u32 %0;\n" : : "n"(RegisterAllocation::kLoadThreadRegisters));
+    asm volatile("setmaxnreg.dec.sync.aligned.u32 %0;\n" : : "n"(TuningConfig::kProducerRegisters));
 
     auto producer = ProducerPipeline(ctx);
     if constexpr (Ctx::kIsIndexedGemm) producer.wait_math_epilogue();
@@ -171,7 +149,7 @@ __global__ __launch_bounds__(TuningConfig::kNumThreads, TuningConfig::kNumCtasPe
       }
     }
   } else {
-    asm volatile("setmaxnreg.inc.sync.aligned.u32 %0;\n" : : "n"(RegisterAllocation::kMathThreadRegisters));
+    asm volatile("setmaxnreg.inc.sync.aligned.u32 %0;\n" : : "n"(TuningConfig::kConsumerRegisters));
 
     auto mainloop_arith = MainloopArithmetic();
     auto epilogue_arith = EpilogueArithmetic();

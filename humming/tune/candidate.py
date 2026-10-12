@@ -79,6 +79,7 @@ class ScheduleCandidate:
     num_stages: int = 2
     producer_stage_unroll: int | None = None
     consumer_stage_unroll: int | None = None
+    producer_registers: int | None = None
     num_ctas_per_sm: int = 1
     raster_group_m: int = 1
     multi_cast_size_a: int = 1
@@ -95,6 +96,11 @@ class ScheduleCandidate:
             value = getattr(self, name)
             if value is not None and (type(value) is not int or value < 1):
                 raise ValueError(f"{name} must be None or a positive integer")
+        producer_registers = self.producer_registers
+        if producer_registers is not None:
+            is_valid = type(producer_registers) is int and 24 <= producer_registers <= 248
+            if not is_valid or producer_registers % 8:
+                raise ValueError("producer_registers must be None or a multiple of 8 between 24 and 248")
         if not self._explicit_fields:
             fields = (
                 field.name
@@ -136,6 +142,7 @@ class ScheduleCandidate:
             num_stages=_config_positive_int(config, "num_stages", 2),
             producer_stage_unroll=config.get("producer_stage_unroll"),
             consumer_stage_unroll=config.get("consumer_stage_unroll"),
+            producer_registers=config.get("producer_registers"),
             num_ctas_per_sm=_config_positive_int(config, "num_ctas_per_sm", 1),
             raster_group_m=_config_positive_int(config, "raster_group_m", 1),
             multi_cast_size_a=_config_positive_int(config, "multi_cast_size_a", 1),
