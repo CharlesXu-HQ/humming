@@ -27,7 +27,7 @@ CUDA_INLINE const void *param_to_ptr(void *const &x) { return x; }
 template <
     class MmaOpClass,
     class ProblemShape, class BlockShape, class WarpShape, class PadShape,
-    class ElementA, class ElementB, class ElementC, class ElementBS,
+    class ElementA, class ElementQB, class ElementC, class ElementBS,
     class LayerConfig, class ComputeConfig, class TuningConfig>
 __global__ __launch_bounds__(TuningConfig::kNumThreads, TuningConfig::kNumCtasPerSm) void humming(
     const __grid_constant__ typename KernelTensorParamType<TuningConfig::kUseTmaA>::Type A,
@@ -55,11 +55,11 @@ __global__ __launch_bounds__(TuningConfig::kNumThreads, TuningConfig::kNumCtasPe
   constexpr bool kUsePdl = TuningConfig::kUsePdl;
 
   using SharedStorage = SharedStorage<
-      MmaOpClass, BlockShape, WarpShape, ElementA, ElementB, ElementBS,
+      MmaOpClass, BlockShape, WarpShape, ElementA, ElementQB, ElementBS,
       LayerConfig, ComputeConfig, TuningConfig>;
   using Ctx = KernelContext<
       MmaOpClass, ProblemShape, BlockShape, WarpShape, PadShape,
-      ElementA, ElementB, ElementC, ElementBS,
+      ElementA, ElementQB, ElementC, ElementBS,
       LayerConfig, ComputeConfig, TuningConfig>;
   using Scheduler = Scheduler<Ctx>;
   using ProducerPipeline = ProducerPipeline<Ctx>;
@@ -120,17 +120,15 @@ __global__ __launch_bounds__(TuningConfig::kNumThreads, TuningConfig::kNumCtasPe
       }
     }
     producer.template load_stage<true, true>(0);
-    PRAGMA_UNROLL
-    for (uint32_t stage_id = 1; stage_id < MAX(kNumStages - 1, 2); stage_id++) {
+    unroll_for<1, MAX(kNumStages - 1, 2), TuningConfig::kProducerStageUnroll>([&](uint32_t stage_id) {
       producer.load_stage(stage_id, stage_id < num_slice_iters);
-    };
+    });
 
     consumer.template wait_stage<true>(kNumStages);
     s2r_pipe.template load_stage_iter<true>(0, 0);
     mma.transform_b(0, 0);
 
-    auto consume_stage = [&](auto stage, uint32_t slice_iter) {
-      constexpr uint32_t stage_id = decltype(stage)::value;
+    auto consume_stage = [&](uint32_t stage_id, uint32_t slice_iter) {
       debug_kernel_timeout_check(debug_start_clock);
       const uint32_t remaining_iters = num_slice_iters - slice_iter;
       if (remaining_iters == 1) producer.load_channel();
@@ -191,15 +189,14 @@ __global__ __launch_bounds__(TuningConfig::kNumThreads, TuningConfig::kNumCtasPe
 
     const uint32_t num_full_stage_cycles = num_slice_iters / kNumStages;
     for (uint32_t cycle_id = 0; cycle_id < num_full_stage_cycles; cycle_id++) {
-      static_for<0, kNumStages>([&](auto stage) {
-        consume_stage(stage, cycle_id * kNumStages + decltype(stage)::value);
+      unroll_for<0, kNumStages, TuningConfig::kConsumerStageUnroll>([&](uint32_t stage_id) {
+        consume_stage(stage_id, cycle_id * kNumStages + stage_id);
       });
     }
     const uint32_t tail_stage_iters = num_slice_iters % kNumStages;
-    static_for<0, kNumStages>([&](auto stage) {
-      constexpr uint32_t stage_id = decltype(stage)::value;
+    unroll_for<0, kNumStages, TuningConfig::kConsumerStageUnroll>([&](uint32_t stage_id) {
       if (stage_id < tail_stage_iters) {
-        consume_stage(stage, num_full_stage_cycles * kNumStages + stage_id);
+        consume_stage(stage_id, num_full_stage_cycles * kNumStages + stage_id);
       }
     });
 

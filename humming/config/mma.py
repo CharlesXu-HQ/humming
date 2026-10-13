@@ -4,6 +4,7 @@ import re
 import humming.dtypes as dtypes
 from humming.config.enum import MmaType
 from humming.device import current_device
+from humming.utils.cubin import is_cubin_patch_enabled
 
 DTYPE_BIT_WIDTH_MAP = {
     "f32": 32,
@@ -46,13 +47,45 @@ UNDOCUMENTED_FP_SM_VERSIONS = (100, 103, 120, 121)
 
 
 def supports_undocumented_fp_dtypes(sm_version: int) -> bool:
-    return sm_version in UNDOCUMENTED_FP_SM_VERSIONS
+    return is_cubin_patch_enabled() and sm_version in UNDOCUMENTED_FP_SM_VERSIONS
 
 
 def uses_undocumented_fp_operand(a_dtype: dtypes.DataType, b_dtype: dtypes.DataType | None = None) -> bool:
     # Weights narrower than the activation are dequantized in software instead of fed to the tensor core.
     has_raw_undocumented_weight = b_dtype in UNDOCUMENTED_FP_DTYPES and b_dtype.num_bits == a_dtype.num_bits
     return a_dtype in UNDOCUMENTED_FP_DTYPES or has_raw_undocumented_weight
+
+
+def get_mma_b_dtype(
+    a_dtype: dtypes.DataType,
+    b_dtype: dtypes.DataType,
+    has_zero_point: bool,
+    sm_version: int,
+) -> dtypes.DataType:
+    fp8_dtypes = (dtypes.float8e4m3, dtypes.float8e5m2, dtypes.float8e3m4)
+    fp4_dtypes = (dtypes.float4e2m1, dtypes.float4e0m3)
+    if a_dtype in fp8_dtypes and b_dtype in fp8_dtypes:
+        return b_dtype
+    if a_dtype in fp4_dtypes and b_dtype in fp4_dtypes:
+        return b_dtype
+    if a_dtype not in fp8_dtypes or b_dtype.num_bits >= a_dtype.num_bits:
+        return a_dtype
+
+    candidates = (a_dtype, dtypes.float8e4m3)
+    if supports_undocumented_fp_dtypes(sm_version):
+        candidates += (dtypes.float8e3m4,)
+    for target_dtype in candidates:
+        if b_dtype.is_integer_type:
+            if b_dtype.num_bits <= target_dtype.mantissa_bits + (1 if has_zero_point else 2):
+                return target_dtype
+        else:
+            required_mantissa = b_dtype.mantissa_bits - (b_dtype.exponent_bits == 0)
+            fits_mantissa = required_mantissa <= target_dtype.mantissa_bits
+            fits_exponent = b_dtype.exponent_bits <= target_dtype.exponent_bits
+            if fits_mantissa and fits_exponent:
+                return target_dtype
+    # Keep unsupported conversions visible to schema/kernel validation.
+    return a_dtype
 
 
 SF_DTYPE_MAP = {
@@ -66,10 +99,7 @@ def get_default_mma_type(layer_config):
         return MmaType.WGMMA
     if layer_config.use_block_scaled_mma and layer_config.sm_version // 10 == 12:
         return MmaType.MXMMA
-    has_low_bit_activation = layer_config.a_dtype.num_bits < 16
-    has_bfloat16_input_output = layer_config.a_dtype == layer_config.c_dtype == dtypes.bfloat16
-    prefer_umma = has_low_bit_activation or has_bfloat16_input_output
-    if layer_config.is_umma_supported and prefer_umma:
+    if layer_config.is_umma_supported:
         return MmaType.UMMA
     return MmaType.MMA
 
@@ -80,7 +110,7 @@ def get_mxmma_scale_config(layer_config):
     group_size = (
         layer_config.weight_scale_group_size
         or layer_config.input_scale_group_size
-        or (32 if layer_config.a_dtype.num_bits == 4 else mma_shape_k)
+        or (layer_config.mma_scale_group_size if layer_config.a_dtype.num_bits == 4 else mma_shape_k)
     )
     assert mma_shape_k % group_size == 0
     scale_dtype = (
@@ -102,6 +132,24 @@ def get_mxmma_compiler_error(layer_config, compiler_version):
             "requires CUDA 13.1 or newer (PTX ISA 9.1)"
         )
     return None
+
+
+def get_warp_spec_registers(layer_config, tuning_config, registers_per_sm=None):
+    if registers_per_sm is None:
+        registers_per_sm = current_device.max_registers_per_sm
+    num_math_threads = math.prod(tuning_config.block_shape) // math.prod(tuning_config.warp_shape) * 32
+    num_threads = num_math_threads + 128
+    launch_budget = registers_per_sm // (num_threads * tuning_config.num_ctas_per_sm) // 8 * 8
+    producer_registers = tuning_config.producer_registers
+    if producer_registers is None:
+        needs_more_load_registers = tuning_config.num_ctas_per_sm == 1 and layer_config.a_dtype.num_bits != 16
+        needs_more_load_registers |= num_math_threads > 256
+        producer_registers = 40 if needs_more_load_registers else 24
+    available_registers = launch_budget * num_threads - producer_registers * 128
+    consumer_registers = min(248, available_registers // num_math_threads // 8 * 8)
+    if producer_registers > launch_budget or consumer_registers < producer_registers:
+        raise ValueError("register budget exceeded: producer allocation cannot fit the launch budget")
+    return producer_registers, consumer_registers
 
 
 def get_register_budget_error(layer_config, tuning_config, use_f16_accum=False, registers_per_sm=None):
@@ -127,11 +175,11 @@ def get_register_budget_error(layer_config, tuning_config, use_f16_accum=False, 
         return None  # UMMA accumulators use TMEM and have separate resource checks.
 
     if mma_type == MmaType.WGMMA:
-        # One instruction spans project N=64 across four warps. ptxas needs
-        # 26 extra registers for SS, or 30 for RS, beyond its accumulator tuple.
-        # setmaxnreg can raise the runtime math budget, but not this compile limit.
+        use_wgmma_ss = layer_config.a_dtype.num_bits == layer_config.b_dtype.num_bits
+        # ptxas needs 26 (SS) or 32 (RS) registers beyond one N=64 accumulator tuple.
+        # setmaxnreg cannot relax this per-instruction compile limit.
         instruction_accumulators = warp_m // (4 if use_f16_accum else 2)
-        instruction_overhead = 26 if layer_config.use_raw_weight else 30
+        instruction_overhead = 26 if use_wgmma_ss else 32
         instruction_registers = instruction_accumulators + instruction_overhead
         if layer_config.use_packed_k_layout and tuning_config.wgmma_split_issue_wait:
             # Split packed-K keeps all RS K slabs live across prefetch. The
@@ -144,28 +192,12 @@ def get_register_budget_error(layer_config, tuning_config, use_f16_accum=False, 
                 f"{instruction_registers} registers per thread; launch budget {launch_budget:g}"
             )
 
-    accumulator_registers = warp_m * warp_n / (64 if use_f16_accum else 32)
-    has_group_accumulator = False
-    if mma_type != MmaType.MXMMA and layer_config.a_dtype.num_bits < 16:
-        has_group_scale = layer_config.input_scale_group_size > 0
-        if not has_group_scale and not layer_config.use_fused_e8m0_scale:
-            has_group_scale = layer_config.is_group_weight_scale or layer_config.is_block_weight_scale
-        has_group_accumulator = has_group_scale
     math_budget = min(255, launch_budget)
     if tuning_config.use_warp_spec:
-        # Match humming_ws.cuh's allocation, using the full physical accumulator
-        # count for its preferred budget, independently of our spill estimate.
-        physical_accumulators = accumulator_registers * (2 if has_group_accumulator else 1)
-        preferred_budget = min(232, max(128, physical_accumulators * 2 + 96))
-        preferred_budget = math.ceil(preferred_budget / 8) * 8
-        needs_more_load_registers = num_math_threads > 256 or (
-            tuning_config.num_ctas_per_sm == 1 and layer_config.a_dtype.num_bits != 16
-        )
-        load_registers = 40 if needs_more_load_registers else 24
-        available_registers = launch_budget * (num_math_threads + 128) - load_registers * 128
-        if num_math_threads > 256:
-            preferred_budget = 96
-        math_budget = min(preferred_budget, max(24, available_registers // num_math_threads // 8 * 8))
+        try:
+            _, math_budget = get_warp_spec_registers(layer_config, tuning_config, registers_per_sm)
+        except ValueError as error:
+            return str(error)
 
     if math_budget < 56:
         return (
@@ -173,28 +205,24 @@ def get_register_budget_error(layer_config, tuning_config, use_f16_accum=False, 
             f"launch budget {launch_budget:g}, math-thread budget {math_budget:g}"
         )
 
-    # Each ordinary MMA buffer spans K=256/activation_bits, hence M/4 and N/4
-    # 32-bit registers per thread. Count dequantized operands, not both copies.
-    buffer_registers = (warp_m + warp_n) / 4
     if mma_type == MmaType.WGMMA:
-        # A is always in smem; raw-weight SS also keeps B in smem.
-        buffer_registers = 0 if layer_config.use_raw_weight else warp_n / 4
-        if not layer_config.use_raw_weight and layer_config.use_packed_k_layout:
-            # The packed B buffer holds one N=64 WGMMA fragment across all K slabs.
-            buffer_registers = warp_k * layer_config.a_dtype.num_bits / 64
+        return None
+
+    accumulator_registers = warp_m * warp_n / (64 if use_f16_accum else 32)
+    has_group_accumulator = False
+    if mma_type != MmaType.MXMMA and layer_config.a_dtype.num_bits < 16:
+        has_group_scale = layer_config.input_scale_group_size > 0
+        if not has_group_scale and not layer_config.use_fused_e8m0_scale:
+            has_group_scale = layer_config.is_group_weight_scale or layer_config.is_block_weight_scale
+        has_group_accumulator = has_group_scale
+    buffer_registers = (warp_m + warp_n) / 4
     if has_group_accumulator:
-        accumulator_registers *= 1.25
-        if mma_type == MmaType.WGMMA and tuning_config.wgmma_split_issue_wait:
-            accumulator_registers = max(accumulator_registers, 2 * instruction_accumulators)
-    input_scale_registers = 0
-    if mma_type == MmaType.WGMMA and layer_config.input_scale_group_size > 0:
-        input_scale_registers = math.ceil(warp_m / 16) * 4
-    demand = accumulator_registers + buffer_registers + input_scale_registers
+        accumulator_registers *= 1.5
+    demand = accumulator_registers + buffer_registers
     if demand >= math_budget - 8:
         return (
             f"register budget exceeded: accumulator {accumulator_registers:g} + "
-            f"single-buffer {buffer_registers:g} + input scales {input_scale_registers:g} "
-            f"= {demand:g} must be < "
+            f"single-buffer {buffer_registers:g} = {demand:g} must be < "
             f"math-thread budget {math_budget:g} - 8 ({math_budget - 8:g})"
         )
     return None
@@ -541,7 +569,7 @@ class MxMmaOpClassImpl:
             self.kind = "kind::mxf8f6f4"
             self.scale_vec = "scale_vec::1X"
 
-        self.native_mixed = self.kind == "kind::mxf8f6f4" and self.a_dtype != self.b_dtype
+        self.native_mixed = self.kind == "kind::mxf8f6f4" and DTYPE_BIT_WIDTH_MAP[self.b_dtype] < 8
         b_reg_dtype = self.b_dtype
         if self.kind == "kind::mxf8f6f4" and DTYPE_BIT_WIDTH_MAP[self.b_dtype] < 8:
             b_reg_dtype = "e4m3"

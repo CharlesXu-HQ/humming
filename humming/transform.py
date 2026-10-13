@@ -256,6 +256,8 @@ def transform_humming_weight(
     use_packed_k_layout: bool = False,
     use_native_dequant: bool = False,
     use_raw_weight: bool = False,
+    use_flat_weight: bool = False,
+    use_ldmatrix_dequant: bool = False,
 ) -> torch.Tensor:
     is_moe = weight.ndim == 3
     weight = weight.unsqueeze(0) if not is_moe else weight
@@ -292,15 +294,26 @@ def transform_humming_weight(
         weight2 = (weight & 0xF0) - 8 * 16
         weight = (weight1 | weight2).view(torch.int32)
 
-    if use_raw_weight or a_dtype.num_bits == b_dtype.num_bits:
-        if a_dtype.num_bits == 8 and b_dtype.num_bits < 8:
+    if use_ldmatrix_dequant:
+        if not packed:
+            weight = ops.pack_weight(weight, b_dtype.num_bits)
+            packed = True
+        sign_mask = sum(1 << bit for bit in range(b_dtype.num_bits - 1, 32, b_dtype.num_bits))
+        weight = weight ^ (sign_mask - (1 << 32))
+
+    if use_raw_weight or use_flat_weight or a_dtype.num_bits == b_dtype.num_bits:
+        if not use_ldmatrix_dequant and a_dtype.num_bits == 8 and b_dtype.num_bits < 8:
             padded_shape_k = round_up(padded_shape_k, 128)
-        # K-contiguous rows are consumed directly by the shared-memory MMA operand.
         if not packed:
             weight = ops.pack_weight(weight, b_dtype.num_bits)
         weight = torch.nn.functional.pad(
             weight, (0, (padded_shape_k - shape_k) * b_dtype.num_bits // 32, 0, padded_shape_n - shape_n)
         )
+        if use_flat_weight:
+            original_shape = weight.shape
+            num_k_chunks = padded_shape_k * b_dtype.num_bits // 128
+            weight = weight.reshape(-1, padded_shape_n // 64, 64, num_k_chunks, 4)
+            weight = weight.permute(0, 3, 1, 2, 4).contiguous().reshape(original_shape)
         if current_device.is_ppu:
             # Match the even-then-odd channel order of PPU MMA's B operand.
             weight = weight.view(-1, padded_shape_n // 8, 8, weight.size(-1))
@@ -560,6 +573,8 @@ def transform_humming_tensors(
         use_packed_k_layout=config.use_packed_k_layout,
         use_native_dequant=config.use_native_dequant,
         use_raw_weight=config.use_raw_weight,
+        use_flat_weight=config.use_flat_weight,
+        use_ldmatrix_dequant=config.use_ldmatrix_dequant,
     )
 
     if weight_scale is not None and config.bs_dtype == dtypes.float8e8m0:

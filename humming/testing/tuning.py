@@ -8,7 +8,7 @@ import random
 
 from humming import dtypes
 from humming.config import ComputeConfig, GemmType, LayerConfig, MmaType, TuningConfig
-from humming.config.mma import get_register_budget_error
+from humming.config.mma import get_mma_b_dtype, get_register_budget_error
 from humming.device import current_device
 from humming.tune import get_heuristics_config
 from humming.utils.smem import estimate_smem_size_config, fits_device_smem
@@ -18,6 +18,9 @@ TEST_TUNING_SEED_ENV = "HUMMING_TEST_TUNING_SEED"
 SAMPLED_TUNING_VALUES = {
     "mma_type": tuple(mma_type.value for mma_type in MmaType),
     "num_stages": (2, 3, 4, 5, 6, 8),
+    "producer_stage_unroll": (None, 1, 2),
+    "consumer_stage_unroll": (None, 1, 2),
+    "producer_registers": (None, 40, 64, 96),
     "wgmma_use_late_as": (False, True),
     "wgmma_split_issue_wait": (False, True),
     "use_tma": (True, False, 123, 456, 789),
@@ -76,21 +79,27 @@ def _is_legal_mma_type(layer_config, compute_config, mma_type):
         dtypes.float16: 75,
         dtypes.bfloat16: 80,
         dtypes.int8: 75,
-        dtypes.int4: 80,
+        dtypes.int4: 75,
         dtypes.float8e4m3: 89,
         dtypes.float8e5m2: 89,
         dtypes.float8e3m4: 120,
         dtypes.float4e2m1: 120,
         dtypes.float4e0m3: 120,
     }
-    if sm_version < min_sm.get(layer_config.a_dtype, 999):
+    mma_b_dtype = get_mma_b_dtype(
+        layer_config.a_dtype,
+        layer_config.b_dtype,
+        layer_config.has_zero_point,
+        sm_version,
+    )
+    min_operand_sm = max(min_sm.get(layer_config.a_dtype, 999), min_sm.get(mma_b_dtype, 999))
+    if sm_version < min_operand_sm:
         return False
     if layer_config.a_dtype.is_floating_point_type and layer_config.b_dtype.is_floating_point_type:
-        if layer_config.b_dtype.exponent_bits > layer_config.a_dtype.exponent_bits:
+        if layer_config.b_dtype.exponent_bits > mma_b_dtype.exponent_bits:
             return False
-        if layer_config.b_dtype.mantissa_bits > layer_config.a_dtype.mantissa_bits:
-            return False
-        if layer_config.a_dtype.exponent_bits and not layer_config.b_dtype.exponent_bits:
+        required_mantissa = layer_config.b_dtype.mantissa_bits - (layer_config.b_dtype.exponent_bits == 0)
+        if required_mantissa > mma_b_dtype.mantissa_bits:
             return False
     return True
 
@@ -413,14 +422,17 @@ def _fits_device_resources(
 def _try_combine_candidate(
     layer_config: LayerConfig,
     compute_config: ComputeConfig,
-    items: tuple[tuple[dict, dict], tuple[dict, dict], tuple[dict, dict]],
+    items: tuple[tuple[dict, dict], ...],
 ) -> tuple[dict, dict] | None:
-    geometry_item, transfer_item, scheduling_item = items
-    geometry_config, geometry_signature = geometry_item
-    transfer_config, transfer_signature = transfer_item
-    scheduling_config, scheduling_signature = scheduling_item
-    config = geometry_config | transfer_config | scheduling_config
+    config = {}
+    signature = {}
+    for item_config, item_signature in items:
+        config.update(item_config)
+        signature.update(item_signature)
     mma_type = MmaType(config["mma_type"])
+    if not config["use_warp_spec"]:
+        config.pop("producer_registers", None)
+        signature.pop("producer_registers", None)
     block_shape = config["block_shape"]
     warp_shape = config["warp_shape"]
     m_warps = block_shape[0] // warp_shape[0]
@@ -454,7 +466,6 @@ def _try_combine_candidate(
     ):
         return None
 
-    signature = geometry_signature | transfer_signature | scheduling_signature
     candidate = (config, signature)
     return candidate if _fits_device_resources(layer_config, compute_config, candidate) else None
 
@@ -466,10 +477,15 @@ def _enumerate_backend_candidates(
     sample_size: int,
 ) -> list[tuple[dict, dict]]:
     rng = random.Random(_get_seed(layer_config, compute_config))
+    pipeline_options = ("producer_stage_unroll", "consumer_stage_unroll")
+    if mma_type != MmaType.UMMA:
+        pipeline_options += ("producer_registers",)
+    pipeline_candidates = _generate_cartesian(*pipeline_options)
     groups = (
         _generate_geometry_candidates(layer_config, compute_config, mma_type),
         _generate_transfer_candidates(layer_config, compute_config, mma_type),
         _generate_scheduling_candidates(layer_config, compute_config, mma_type),
+        [(config, config) for config in pipeline_candidates],
     )
     candidates = []
     signatures = set()
