@@ -13,7 +13,7 @@ CUDA_INLINE uint64_t make_wgmma_smem_desc(uint32_t addr) {
   constexpr uint64_t desc_base = (swizzle_type << 62) | (stride << 32);
 
   uint64_t desc = desc_base;
-  reinterpret_cast<uint32_t *>(&desc)[0] = (addr >> 4);
+  reinterpret_cast<uint32_t *>(&desc)[0] = (addr >> 4) & 0x3fff;
 
   return desc;
 };
@@ -167,7 +167,8 @@ public:
           uint32_t col = ctx.k_warp_offset() + k_slab * kPartMmaShapeK;
           uint32_t offset = (col * ElementQB::kBits / 128 * BlockShape::N + row) * 16;
           const uint32_t b_addr = stage_addr + offsetof(typename SharedStorage::StageStorage, b);
-          uint64_t b_desc = (uint64_t(b_addr + offset) >> 4) | (uint64_t(BlockShape::N) << 16) | (uint64_t(8) << 32);
+          uint32_t b_start = ((b_addr + offset) >> 4) & 0x3fff;
+          uint64_t b_desc = b_start | (uint64_t(BlockShape::N) << 16) | (uint64_t(8) << 32);
           MmaOpClass::fma(desc, b_desc, regs_c[0][delta_j + j][0], scale_d);
         } else {
           MmaOpClass::fma(desc, regs_b[buffer_id][j][k], regs_c[0][delta_j + j][0], scale_d);
