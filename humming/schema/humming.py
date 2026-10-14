@@ -337,7 +337,7 @@ class HummingWeightSchema(BaseWeightSchema):
                 shape_n_stacks=shape_n_stacks,
                 shape_k_stacks=shape_k_stacks,
                 num_experts=num_experts,
-                target_group_size=schema.weight_scale_group_size,
+                target_group_size=schema.weight_scale_group_size if len(shape_k_stacks) > 1 else None,
             )
 
             if tensor_scale.nelement() == (num_experts or 1):
@@ -345,9 +345,16 @@ class HummingWeightSchema(BaseWeightSchema):
                 if is_tensor_only:
                     schema.bs_dtype = dtypes.float32
             elif is_tensor_only:
-                schema.weight_scale_type = WeightScaleType.CHANNEL
+                if len(shape_k_stacks) > 1:
+                    schema.weight_scale_type = WeightScaleType.GROUP
+                    schema.weight_scale_group_size = sum(shape_k_stacks) // tensor_scale.size(-1)
+                else:
+                    schema.weight_scale_type = WeightScaleType.CHANNEL
                 schema.bs_dtype = dtypes.DataType.from_torch_dtype(param_dtype)
                 tensors["weight_scale"] = tensor_scale.to(param_dtype)
+            elif self.weight_scale_type == WeightScaleType.GROUP and len(shape_n_stacks) > 1:
+                schema.weight_scale_2_type = WeightScale2Type.CHANNEL
+                tensors["weight_scale_2"] = tensor_scale.squeeze(-1).to(param_dtype)
             else:
                 schema.weight_scale_2_type = WeightScale2Type.NONE
                 weight_scale = tensors["weight_scale"]
