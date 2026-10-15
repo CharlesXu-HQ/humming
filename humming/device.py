@@ -36,6 +36,8 @@ class DeviceInfo:
         return self._value
 
     def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
         return getattr(self._get_value(), name)
 
     def __repr__(self) -> str:
