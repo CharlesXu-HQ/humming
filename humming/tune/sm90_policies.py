@@ -155,6 +155,84 @@ def fit_sm90_tile(
         config["warp_shape"] = (smaller_m, warp_n, warp_k)
 
 
+def select_sm90_small_m_schedule(
+    problem: TuningProblem,
+    selected: TuningDecision | dict,
+) -> TuningDecision | dict:
+    layer = problem.layer_config
+    config = selected.to_config() if isinstance(selected, TuningDecision) else selected
+    num_sms = problem.device.num_sms
+    assert num_sms is not None
+    block_m, block_n, block_k = config["block_shape"]
+    weight_bits = layer.b_dtype.num_bits
+    is_power_of_two_weight = weight_bits & (weight_bits - 1) == 0
+    warp_n, warp_k = (64, 32) if is_power_of_two_weight else (32, 64)
+    mma_m = max(16, math.ceil(block_m / 16) * 16)
+    num_stages = 4
+    num_weight_tiles = (layer.shape_n // 128) * (layer.shape_k // 128)
+    reason = None
+    proposal = None
+
+    if problem.gemm_type == GemmType.DENSE:
+        has_two_cta_work = num_weight_tiles >= num_sms * 2 * num_stages * 2
+        has_small_accumulator = mma_m * warp_n <= 1024
+        num_ctas = 2 if has_two_cta_work and has_small_accumulator else 1
+        has_pipeline_work = num_weight_tiles >= num_sms * num_stages
+        has_small_m = problem.shape_m <= 16
+        has_decode_work = problem.shape_m <= 32 and weight_bits >= 4 and has_two_cta_work
+        has_decode_work &= mma_m == block_m
+        if has_pipeline_work and (has_small_m or has_decode_work):
+            reason = "selected MMA with CTA residency fitted to K work and accumulator size"
+    elif mma_m <= 32:
+        # Halving an indexed K tile adds loads without removing producer overhead.
+        if problem.gemm_type == GemmType.INDEXED and block_k > 128:
+            return selected
+        num_output_tiles = problem.estimate_num_blocks_m(mma_m) * (layer.shape_n // 128)
+        num_base_tiles = problem.estimate_num_blocks_m(block_m) * (layer.shape_n // block_n)
+        has_short_grid = num_output_tiles <= num_sms * 5 / 4
+        has_extra_k_parallelism = block_k <= 64 and num_output_tiles <= num_sms * 9 / 4
+        has_no_extra_padding = mma_m == block_m and num_output_tiles <= num_sms * 2
+        can_round_m = block_m <= 16 and (has_short_grid or has_extra_k_parallelism or has_no_extra_padding)
+        # Rounding 24-row expert tiles to 32 regresses with skewed routing.
+        if can_round_m:
+            num_ctas = 2 if mma_m == 16 and num_output_tiles >= num_sms / 2 else 1
+            reason = "selected MMA for a short expert grid with bounded row padding"
+        elif block_m < 32 and block_k >= 128 and num_base_tiles <= num_sms:
+            if config.get("use_tma", False) or config.get("use_warp_spec", False):
+                proposal = config | {"use_tma": False, "use_warp_spec": False}
+                reason = "removed producer and TMA overhead from a short expert grid"
+
+    if reason is None:
+        return selected
+    if proposal is None:
+        proposal = {
+            "mma_type": MmaType.MMA.value,
+            "block_shape": (mma_m, 128, 128),
+            "warp_shape": (mma_m, warp_n, warp_k),
+            "num_stages": num_stages,
+            "num_ctas_per_sm": num_ctas,
+            "use_stream_k": True,
+            "use_tma": False,
+            "use_warp_spec": False,
+        }
+    candidate = ScheduleCandidate.from_config("sm90_small_m", proposal)
+    analysis = analyze_candidate(problem, candidate)
+    if not analysis.legal:
+        return selected
+    if isinstance(selected, TuningDecision):
+        considered = selected.considered
+    else:
+        base = ScheduleCandidate.from_config("sm90_small_m_base", config)
+        considered = (analyze_candidate(problem, base),)
+    return TuningDecision(
+        problem=problem,
+        family="sm90_small_m",
+        selected=candidate,
+        considered=(*considered, analysis),
+        reason=reason,
+    )
+
+
 def get_sm90_specialized_config(
     layer_config: LayerConfig,
     shape_m: int,

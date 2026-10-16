@@ -583,6 +583,25 @@ class Sm90H20Heuristics(DeviceHeuristics):
         config = cls._select_config(
             layer_config, shape_m, use_f16_accum, use_batch_invariant, gemm_type, use_m_major_input_scale
         )
+        is_dense_a16 = gemm_type == GemmType.DENSE and layer_config.a_dtype.num_bits == 16
+        can_tune_transfers = is_dense_a16 and layer_config.shape_k >= 4096
+        can_tune_transfers &= not use_batch_invariant and not use_f16_accum
+        if can_tune_transfers:
+            block_shape = config["block_shape"]
+            warp_m, warp_n, warp_k = config["warp_shape"]
+            num_ctas = config.get("num_ctas_per_sm", 1)
+            num_k_warps = block_shape[2] // warp_k
+            num_math_warps = math.prod(block_shape) // math.prod(config["warp_shape"])
+            accumulator_registers = warp_m * warp_n // 32
+            resident_math_warps = num_math_warps * num_ctas
+            if num_k_warps >= 4:
+                config = config | {"use_tma": True, "use_warp_spec": True}
+            elif num_k_warps > 1 and accumulator_registers > 32:
+                config = config | {"use_tma": resident_math_warps >= 16, "use_warp_spec": False}
+            elif num_math_warps == 4 and accumulator_registers <= 64:
+                config = config | {"use_tma": True}
+                if accumulator_registers < 64:
+                    config = config | {"use_warp_spec": True}
         return fit_sm90_tile(
             layer_config,
             config,

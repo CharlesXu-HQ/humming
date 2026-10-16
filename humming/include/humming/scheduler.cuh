@@ -104,7 +104,13 @@ public:
       uint32_t streamk_mn_blocks = mn_blocks;
       if (mn_blocks > kNumCtaGroups) {
         streamk_mn_blocks = mn_blocks % kNumCtaGroups;
-        if (streamk_mn_blocks && streamk_mn_blocks * 10 <= kNumCtaGroups) streamk_mn_blocks += kNumCtaGroups;
+        bool should_merge_previous_wave = streamk_mn_blocks * 10 <= kNumCtaGroups;
+        if constexpr (Ctx::kSmVersion == 89 && !Ctx::kUseTmaC) {
+          should_merge_previous_wave = streamk_mn_blocks * 2 <= kNumCtaGroups;
+        } else if constexpr (Ctx::kSmVersion >= 100 && Ctx::kSmVersion < 110 && Ctx::kUseTmaC) {
+          should_merge_previous_wave = true;
+        }
+        if (streamk_mn_blocks && should_merge_previous_wave) streamk_mn_blocks += kNumCtaGroups;
       }
 
       dp_mn_iters = (mn_blocks - streamk_mn_blocks) / kNumCtaGroups;

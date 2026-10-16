@@ -111,7 +111,7 @@ public:
       if (ctx.k_warp_id() != 0) return;
     }
     const uint32_t thread_id = GmemWriter::kUseWarpgroupEpilogue ? ctx.math_thread_id() % 128 : ctx.math_thread_id();
-    if (Ctx::kUseTmaC || slice_count > 3) {
+    if (Ctx::kUseTmaC || (GmemWriter::kHasNativeAtomicAdd && slice_count > 3)) {
       int32_t val = slice_id == 0 ? 0 : -1;
       barrier_acquire2<kNumStreamKSyncThreads, Ctx::kNumThreads>(&locks[locks_offset], val, thread_id, get_output_barrier_id());
     } else {
@@ -125,7 +125,7 @@ public:
       if (ctx.k_warp_id() != 0) return;
     }
     const uint32_t thread_id = GmemWriter::kUseWarpgroupEpilogue ? ctx.math_thread_id() % 128 : ctx.math_thread_id();
-    if (Ctx::kUseTmaC || slice_count > 3) {
+    if (Ctx::kUseTmaC || (GmemWriter::kHasNativeAtomicAdd && slice_count > 3)) {
       int32_t val = slice_id == 0 ? 1 - static_cast<int32_t>(slice_count) : 0;
       barrier_release2<kNumStreamKSyncThreads, Ctx::kNumThreads>(&locks[locks_offset], val, thread_id, get_output_barrier_id());
     } else {
