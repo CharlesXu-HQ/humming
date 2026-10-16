@@ -36,7 +36,7 @@ class DeviceHeuristics:
     b8_allowed_dtypes: list[dtypes.DataType] = []
     b4_allowed_dtypes: list[dtypes.DataType] = []
     sm_version: int = 0
-    expert_probability_cv: float = 0.25
+    expert_probability_cv: float = 0.0
 
     @classmethod
     def should_use_pdl_for_input(cls, layer_config: LayerConfig, shape_m: int) -> bool:
@@ -66,7 +66,8 @@ class DeviceHeuristics:
         use_m_major_input_scale: bool = False,
     ):
         compute_bound_min_shape_m = _estimate_compute_bound_threshold(layer_config, use_f16_accum)
-        is_moe_a16 = gemm_type != GemmType.DENSE and layer_config.a_dtype.num_bits == 16
+        is_a16 = layer_config.a_dtype.num_bits == 16
+        is_moe_a16 = gemm_type != GemmType.DENSE and is_a16
 
         # 1. base config
         group_size = layer_config.input_scale_group_size or layer_config.weight_scale_group_size
@@ -88,14 +89,16 @@ class DeviceHeuristics:
         num_warps_m = block_shape_m // warp_shape_m
 
         # 2. block_shape_m and warp_shape_m
+        can_use_mma_m8 = is_a16 and not current_device.is_ppu
         if not layer_config.num_experts:
             if shape_m <= block_shape_m:
-                block_shape_m = round_up(shape_m, 16)
+                block_shape_m = 8 if can_use_mma_m8 and shape_m <= 8 else round_up(shape_m, 16)
             else:
                 blocks = [math.ceil(shape_m / ((i + 1) * 16)) for i in range(block_shape_m // 16)]
                 block_shape_m = np.argmin(blocks).item() * 16 + 16
         else:
-            for moe_block_size in [16, 32, 48, 64]:
+            moe_block_sizes = [8, 16, 32, 48, 64] if can_use_mma_m8 else [16, 32, 48, 64]
+            for moe_block_size in moe_block_sizes:
                 if shape_m / layer_config.num_experts / moe_block_size < 0.9:
                     break
 

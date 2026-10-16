@@ -160,7 +160,8 @@ public:
 
   CUDA_INLINE
   void seek(uint32_t expert_id, uint32_t m_block_id, uint32_t n_block_id, uint32_t current_shape_m, uint32_t m_offset) {
-    gmem_writer.seek(m_block_id, n_block_id, current_shape_m, m_offset);
+    if constexpr (!(Ctx::kUseUmma && SharedStorage::kUseDynamicOutputMap))
+      gmem_writer.seek(m_block_id, n_block_id, current_shape_m, m_offset);
     if constexpr (kHasTensorInputScale && !(Ctx::kUseUmma && Ctx::kHasInputScale2)) {
       const uint32_t *as_ptr = reinterpret_cast<const uint32_t *>(Ctx::kIsTensorInputScale2 ? ctx.params.as2 : ctx.params.as);
       arith.as[0] = as_ptr[0];

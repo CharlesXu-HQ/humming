@@ -201,10 +201,11 @@ class Sm90Heuristics(Sm80Heuristics):
         if is_wna16 and has_short_reduction and is_tile_aligned and can_use_small_mma:
             # A short reduction cannot amortize a producer warpgroup or Stream-K
             # fixups. Two K warps let MMA dequantize while keeping the M tile small.
+            block_m = 8 if shape_m <= 8 else 16
             return {
                 "mma_type": MmaType.MMA.value,
-                "block_shape": (16, 128, 64),
-                "warp_shape": (16, 32, 32),
+                "block_shape": (block_m, 128, 64),
+                "warp_shape": (block_m, 32, 32),
                 "num_stages": 4,
                 "num_ctas_per_sm": 1,
                 "use_stream_k": False,

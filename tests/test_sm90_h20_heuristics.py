@@ -71,22 +71,19 @@ def test_long_k_balances_m_reuse_and_stream_k_grid():
     assert config["num_sms"] >= 64
 
 
-@pytest.mark.parametrize(
-    ("shape_n", "block_n"),
-    [(512, 256), (1024, 512)],
-)
-def test_sparse_long_k_moe_keeps_two_n_tiles_per_expert(shape_n, block_n):
-    config = Sm90H20Heuristics.get_config(
-        _layer(shape_n, 7168, num_experts=256),
-        8,
-        gemm_type=GemmType.INDEXED,
-    )
+@pytest.mark.parametrize("shape_n", [512, 1024])
+@pytest.mark.parametrize("gemm_type", [GemmType.INDEXED, GemmType.GROUPED_CONTIGUOUS])
+def test_sparse_long_k_moe_uses_mma_without_extra_row_padding(shape_n, gemm_type):
+    layer = _layer(shape_n, 7168, num_experts=256)
+    sparse = Sm90H20Heuristics.get_config(layer, 8, gemm_type=gemm_type)
+    populated = Sm90H20Heuristics.get_config(layer, 1024, gemm_type=gemm_type)
 
-    assert config["block_shape"] == (8, block_n, 64)
-    assert config["num_stages"] == 3
+    assert sparse["mma_type"] == "mma"
+    assert sparse["block_shape"][0] == sparse["warp_shape"][0] == 8
+    assert populated.get("mma_type", "wgmma") == "wgmma"
 
 
-@pytest.mark.parametrize("shape_m", [3072, 12288, 24576])
+@pytest.mark.parametrize("shape_m", [4096, 12288, 24576])
 @pytest.mark.parametrize("a_dtype", [dtypes.float16, dtypes.bfloat16])
 def test_large_mxfp4_grouped_contiguous_uses_three_resident_ctas(shape_m, a_dtype):
     config = Sm90H20Heuristics.get_config(

@@ -722,6 +722,58 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
         raise ValueError("no resource-feasible dense UMMA tile for this layer")
 
     @classmethod
+    def _select_grouped_epilogue(
+        cls, layer_config, shape_m, config, gemm_type, use_m_major_input_scale=False
+    ):
+        is_grouped_a16 = gemm_type == GemmType.GROUPED_CONTIGUOUS and layer_config.a_dtype.num_bits == 16
+        if not is_grouped_a16 or layer_config.use_raw_weight or layer_config.use_flat_weight:
+            return config
+
+        block_m, block_n, block_k = config["block_shape"]
+        num_stages = config["num_stages"]
+        num_ctas = config["num_ctas_per_sm"]
+        is_short_reduction = layer_config.shape_k // block_k <= 3 * num_stages
+        m_tiles = cls.estimate_num_blocks_m(layer_config, shape_m, block_m, gemm_type)
+        output_tiles = m_tiles * (layer_config.shape_n // block_n)
+        has_persistent_work = output_tiles >= 2 * current_device.sm_count * num_ctas
+        if not is_short_reduction or not has_persistent_work:
+            return config
+
+        output_chunk_rows = 32
+        if not cls._fits_resources(
+            layer_config,
+            config["block_shape"],
+            num_stages,
+            num_ctas,
+            gemm_type,
+            output_chunk_rows=output_chunk_rows,
+            use_m_major_input_scale=use_m_major_input_scale,
+        ):
+            return config
+
+        # Small output chunks release accumulators sooner and shorten register live ranges.
+        config = config | {
+            "output_chunk_rows": output_chunk_rows,
+            "producer_stage_unroll": 1,
+            "consumer_stage_unroll": 1,
+        }
+        # Wider N amortizes tile transitions when the reduction has few pipeline turns.
+        wider_n = 2 * block_n
+        if layer_config.shape_n % wider_n == 0:
+            wider_shape = (block_m, wider_n, block_k)
+            if cls._fits_resources(
+                layer_config,
+                wider_shape,
+                num_stages,
+                num_ctas,
+                gemm_type,
+                output_chunk_rows=output_chunk_rows,
+                use_m_major_input_scale=use_m_major_input_scale,
+            ):
+                config = config | {"block_shape": wider_shape}
+        return config
+
+    @classmethod
     @functools.lru_cache(maxsize=64)
     def _get_moe_candidates(
         cls, layer_config: LayerConfig, gemm_type: GemmType, use_m_major_input_scale: bool = False
@@ -867,7 +919,9 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
             best = single_cta
         if best is None:
             raise ValueError("no resource-feasible UMMA MoE tile for this layer")
-        return best[1]
+        return cls._select_grouped_epilogue(
+            layer_config, shape_m, best[1], gemm_type, use_m_major_input_scale
+        )
 
 
 class Sm100Heuristics(Sm100MmaHeuristics):

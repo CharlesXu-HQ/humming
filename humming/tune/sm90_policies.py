@@ -158,6 +158,8 @@ def fit_sm90_tile(
 def select_sm90_small_m_schedule(
     problem: TuningProblem,
     selected: TuningDecision | dict,
+    *,
+    is_h20: bool = False,
 ) -> TuningDecision | dict:
     layer = problem.layer_config
     config = selected.to_config() if isinstance(selected, TuningDecision) else selected
@@ -167,7 +169,8 @@ def select_sm90_small_m_schedule(
     weight_bits = layer.b_dtype.num_bits
     is_power_of_two_weight = weight_bits & (weight_bits - 1) == 0
     warp_n, warp_k = (64, 32) if is_power_of_two_weight else (32, 64)
-    mma_m = max(16, math.ceil(block_m / 16) * 16)
+    mma_m = 8 if block_m <= 8 else math.ceil(block_m / 16) * 16
+    mma_k = 128
     num_stages = 4
     num_weight_tiles = (layer.shape_n // 128) * (layer.shape_k // 128)
     reason = None
@@ -183,6 +186,13 @@ def select_sm90_small_m_schedule(
         has_decode_work &= mma_m == block_m
         if has_pipeline_work and (has_small_m or has_decode_work):
             reason = "selected MMA with CTA residency fitted to K work and accumulator size"
+    elif mma_m == 8:
+        num_output_tiles = problem.estimate_num_blocks_m(mma_m) * (layer.shape_n // 128)
+        if is_h20 and num_output_tiles > num_sms:
+            return selected
+        mma_k = 64
+        num_ctas = 4
+        reason = "selected MMA for eight-row expert tiles"
     elif mma_m <= 32:
         # Halving an indexed K tile adds loads without removing producer overhead.
         if problem.gemm_type == GemmType.INDEXED and block_k > 128:
@@ -207,7 +217,7 @@ def select_sm90_small_m_schedule(
     if proposal is None:
         proposal = {
             "mma_type": MmaType.MMA.value,
-            "block_shape": (mma_m, 128, 128),
+            "block_shape": (mma_m, 128, mma_k),
             "warp_shape": (mma_m, warp_n, warp_k),
             "num_stages": num_stages,
             "num_ctas_per_sm": num_ctas,
@@ -222,7 +232,8 @@ def select_sm90_small_m_schedule(
     if isinstance(selected, TuningDecision):
         considered = selected.considered
     else:
-        base = ScheduleCandidate.from_config("sm90_small_m_base", config)
+        base_config = {key: value for key, value in config.items() if key != "num_sms"}
+        base = ScheduleCandidate.from_config("sm90_small_m_base", base_config)
         considered = (analyze_candidate(problem, base),)
     return TuningDecision(
         problem=problem,

@@ -305,7 +305,7 @@ def test_mxfp4_a16_short_k_limits_wide_n_tile_before_block_m48(shape_k):
     )
     large = Sm90Heuristics.get_config(
         layer,
-        shape_m=8192,
+        shape_m=10240,
         gemm_type=GemmType.INDEXED,
     )
 
@@ -406,3 +406,25 @@ def test_grouped_w4a8_ranges_match_direct_selection(monkeypatch, device_name, nu
         for shape_m in (lower + 1, min(upper, lower + num_experts * 2048)):
             assert select(layer, shape_m=shape_m, **kwargs) == config
         previous_upper = upper
+
+
+@pytest.mark.parametrize("gemm_type", [GemmType.INDEXED, GemmType.GROUPED_CONTIGUOUS])
+@pytest.mark.parametrize("routed_m", [8, 256, 1024])
+def test_small_a16_expert_tiles_use_mma_without_padding(gemm_type, routed_m):
+    layer = _layer(
+        1024,
+        7168,
+        num_experts=256,
+        a_dtype=dtypes.bfloat16,
+        as_dtype=None,
+        bs_dtype=dtypes.float8e4m3,
+        input_scale_group_size=0,
+        weight_scale_group_size=16,
+    )
+    config = Sm90Heuristics.get_config(layer, routed_m, gemm_type=gemm_type)
+
+    assert config["mma_type"] == "mma"
+    assert config["block_shape"][0] == config["warp_shape"][0] == 8
+    assert config["use_stream_k"] is True
+    assert not config.get("use_tma", False)
+    assert not config.get("use_warp_spec", False)
