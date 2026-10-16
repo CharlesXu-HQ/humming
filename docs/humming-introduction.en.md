@@ -1,6 +1,6 @@
 # Announcing Humming: Fast, Flexible Kernels for Quantized Inference
 
-Jointly developed by Ant Group and the vLLM community, Humming is a high-performance, JIT-compiled GEMM kernel library for quantized dense and mixture-of-experts (MoE) inference. By combining a unified quantization representation, reusable CUDA components, and extensive tuning for different devices, Humming brings diverse quantization formats and broad hardware support into one framework, making efficient, flexible quantized inference available to more models and devices.
+Jointly developed by Ant Group's Venus team and the vLLM community, Humming is a high-performance, JIT-compiled GEMM kernel library for quantized dense and mixture-of-experts (MoE) inference. By combining a unified quantization representation, reusable CUDA components, and extensive tuning for different devices, Humming brings diverse quantization formats and broad hardware support into one framework, making efficient, flexible quantized inference available to more models and devices.
 
 ## Background
 
@@ -150,3 +150,23 @@ The following figure compares W4A16 GEMM speedups over cuBLAS across GPUs, with 
 <p align="center">
   <a href="humming-w4a16-performance-en.svg"><img src="humming-w4a16-performance-en.svg" alt="W4A16 GEMM speedups over cuBLAS across GPUs" width="1200"></a>
 </p>
+
+
+
+TODO: W4A16 MoE / W4A8 / W8A8 / W4A4
+
+## Future Plans
+
+### Broader and Deeper Device Support
+
+Humming will continue expanding hardware coverage while adapting to the compute and memory capabilities of new devices, helping more platforms realize the performance potential of quantized inference. Priorities include:
+
+- Supporting more Rubin architecture features, including Locality Domains, to further optimize task mapping and data access.
+- Extending support to more T-Head PPU devices, including the ZW890P.
+- Supporting more devices compatible with CUDA programming, bringing existing quantization formats, kernel components, and tuning capabilities to additional hardware platforms.
+
+### Adding Autotune
+
+With targeted tuning, Humming can already achieve state-of-the-art performance in most scenarios. However, the wide range of model shapes, quantization configurations, and device resources makes it difficult for heuristics to select the optimal configuration in every case.
+
+Humming therefore plans to introduce autotune, benchmarking candidate configurations on the target device to find better execution parameters for each workload. Autotune will complement existing heuristics, reducing manual configuration search and helping more workloads approach the kernels' best achievable performance.
