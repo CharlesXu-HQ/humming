@@ -1,6 +1,6 @@
 # Announcing Humming: Fast, Flexible Kernels for Quantized Inference
 
-Humming is a JIT-compiled GEMM kernel library for quantized dense and mixture-of-experts (MoE) inference, built around a common quantization representation and reusable CUDA components.
+Jointly developed by Ant Group and the vLLM community, Humming is a high-performance, JIT-compiled GEMM kernel library for quantized dense and mixture-of-experts (MoE) inference. By combining a unified quantization representation, reusable CUDA components, and extensive tuning for different devices, Humming brings diverse quantization formats and broad hardware support into one framework, making efficient, flexible quantized inference available to more models and devices.
 
 ## Background
 
@@ -66,22 +66,87 @@ Each group of components handles a different source of variation:
 
 JIT compilation combines these components according to the three configurations and eliminates unused implementation branches. A new format or architecture can therefore be supported by extending the relevant components. Improvements to a shared component benefit compatible configurations, reducing the duplicated development and maintenance of separate specialized kernels.
 
-## Performance Engineering
+### Performance Tuning Based on Device Parameters
 
-TODO: Describe Humming's performance optimization work.
+Humming deeply optimizes kernels using both the GEMM configuration and device parameters. Quantization formats, matrix shapes, GPU instruction support, SM count, shared memory, and register resources all inform execution choices, turning the benefits of low-bit storage into practical inference performance.
+
+**Efficient W4A8-MXFP4 inference on existing GPUs.** Architectures before Blackwell lack native MXFP4 Tensor Core support, and conventional W4A8-MXFP4 kernels can be limited by dequantization and scaling overhead at larger M. Humming addresses this with a fast MXFP4-to-INT8/FP8 dequantization path that converts MXFP4 weights into a supported compute format within the kernel. In this setting, the path substantially outperforms conventional W4A8 implementations at small M and approaches W8A8 performance at large M. GPUs such as H200 can therefore run high-performance W4A8-MXFP4 kernels while retaining the storage benefits of 4-bit weights.
+
+**Dequantization paths matched to each device.** The same quantization format can benefit from different implementations across GPUs. Humming selects decoding, numeric conversion, and scaling paths for the device, pairing them with suitable memory access and compute pipelines to reduce instruction and data movement overhead. Shared components make these optimizations reusable across compatible dense and MoE kernels.
+
+**Extensive tuning controls with device-specific heuristics.** Humming exposes tile shapes, pipeline stage counts, warp specialization, TMA, MMA instructions, CTA concurrency, and Stream-K scheduling. Device-specific heuristics combine GEMM shapes with resource constraints to balance parallelism, data reuse, and pipeline overhead, selecting different execution strategies as input sizes change. Developers can use the default configurations directly or refine them for particular models and deployment scenarios.
 
 ## Usage
 
-TODO: Show how to use Humming directly and in vLLM, including basic environment variable settings.
+### Installation
+
+Install Humming with pip:
+
+```bash
+pip install humming-kernels
+```
+
+Humming uses a CUDA compiler to generate kernels on demand. If no CUDA compiler is available on the system, choose one of the following installation options to include the compilation dependencies for your environment's CUDA major version:
+
+```bash
+pip install "humming-kernels[cu12]"  # CUDA 12
+pip install "humming-kernels[cu13]"  # CUDA 13
+```
+
+### Using Humming in vLLM
+
+Humming is deeply integrated into vLLM. The `--linear-backend` and `--moe-backend` options select Humming as the compute backend for dense GEMM and MoE GEMM, respectively. For example, enable Humming for both:
+
+```bash
+vllm serve openai/gpt-oss-20b --linear-backend humming --moe-backend humming
+```
+
+For quantized checkpoints that vLLM does not yet parse natively but Humming supports, users can also try `--quantization humming` to explicitly select Humming's quantization loading path:
+
+```bash
+vllm serve openai/gpt-oss-20b --quantization humming
+```
+
+### Selecting Activation Types
+
+By default, Humming uses the activation type specified in the checkpoint and adapts execution to the device. If the GPU does not support that compute type, Humming falls back to a supported higher-precision type. For example, devices without native MXFP4 support can automatically use FP8, BF16, or FP16 compute paths, allowing the same quantized checkpoint to run across GPU generations.
+
+Users can override the default through vLLM's quantization configuration interface to select an activation type for their deployment. The following example sets the activation type for MoE layers to MXFP8:
+
+```bash
+vllm serve openai/gpt-oss-20b --quantization-config.moe.activation mxfp8
+```
 
 ## Results
 
 ### Broad Device Support
 
-TODO: Describe full support for Turing / Ampere / Ada Lovelace / Hopper / Blackwell (/ Rubin).
+Humming's unified architecture enables broad GPU support. For NVIDIA GPUs, Humming fully supports every architecture from Turing onward, bringing a common quantized computing framework to multiple generations of hardware.
+
+The unified JIT architecture also makes it straightforward to extend Humming to other GPUs compatible with CUDA programming. Humming already fully supports T-Head's PPU 810 Series, including the ZW-810 and ZW-810E, bringing its shared kernels and tuning capabilities to more hardware platforms.
+
+The figure below shows the high-performance activation types supported by Humming on each device: types that can take full advantage of the device's peak compute capabilities. Some types omitted from the figure can still run through other instruction paths. For example, UMMA instructions on the B300 (SM103) no longer support INT8 computation, but earlier MMA instructions can still execute INT8 GEMM, with substantially lower performance.
+
+<p align="center">
+  <a href="humming-device-support-en.svg"><img src="humming-device-support-en.svg" alt="Humming device architecture and activation type support matrix" width="700"></a>
+</p>
 
 ### Quantization Support
 
+Humming's support for quantization types depends primarily on compatibility between activation and weight types. Its unified quantization representation and kernel architecture allow a wide range of integer and floating-point weight formats to work with activations at different precisions, providing flexible choices for model precision and deployment performance.
+
+The figure below shows the weight and activation type combinations supported by Humming. Rows represent weight types, columns represent activation types, and checks indicate supported combinations. Together with the device support matrix above, it outlines the high-performance quantized computation paths available on each hardware architecture.
+
+<p align="center">
+  <a href="humming-quantization-support-en.svg"><img src="humming-quantization-support-en.svg" alt="Humming weight and activation type support matrix" width="700"></a>
+</p>
+
+Humming also supports a special floating-point format with zero exponent bits, whose representable values match those of symmetric integers at the same bit width. For example, INT8 excluding `-128` and `float8e0m7` both represent integers from `-127` to `127`. Weights in this format have the same activation type compatibility as INT weights of the same bit width. Humming automatically converts eligible symmetric integer weights to this format for faster dequantization.
+
 ### Performance
 
-TODO: Compare performance against representative baselines on each device, including cuBLAS / Marlin / FlashInfer / TensorRT-LLM / hpc-ops.
+The following figure compares W4A16 GEMM speedups over cuBLAS across GPUs, with M covering every power of two from 1 to 8192.
+
+<p align="center">
+  <a href="humming-w4a16-performance-en.svg"><img src="humming-w4a16-performance-en.svg" alt="W4A16 GEMM speedups over cuBLAS across GPUs" width="1200"></a>
+</p>
