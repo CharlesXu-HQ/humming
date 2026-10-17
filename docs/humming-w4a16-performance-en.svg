@@ -28,7 +28,7 @@ L 0 0
 z
 " style="fill: #ffffff"/>
   </g>
-  <g id="axes_1">
+  <g id="axes_1" transform="translate(0 10)">
    <g id="patch_2">
     <path d="M 58.32 329.800104
 L 418.746036 329.800104
@@ -310,7 +310,7 @@ z
     </g>
    </g>
   </g>
-  <g id="axes_2">
+  <g id="axes_2" transform="translate(0 10)">
    <g id="patch_5">
     <path d="M 487.226982 329.800104
 L 847.653018 329.800104
@@ -576,7 +576,7 @@ L 839.148731 293.490762
     </g>
    </g>
   </g>
-  <g id="axes_3">
+  <g id="axes_3" transform="translate(0 10)">
    <g id="patch_8">
     <path d="M 916.133964 329.800104
 L 1276.56 329.800104
@@ -842,7 +842,7 @@ L 1268.055713 311.510051
     </g>
    </g>
   </g>
-  <g id="axes_4">
+  <g id="axes_4" transform="translate(0 10)">
    <g id="patch_11">
     <path d="M 58.32 599.870052
 L 418.746036 599.870052
@@ -1093,7 +1093,7 @@ L 410.241749 581.891946
     </g>
    </g>
   </g>
-  <g id="axes_5">
+  <g id="axes_5" transform="translate(0 10)">
    <g id="patch_14">
     <path d="M 487.226982 599.870052
 L 847.653018 599.870052
@@ -1384,7 +1384,7 @@ L 839.148731 535.811008
     </g>
    </g>
   </g>
-  <g id="axes_6">
+  <g id="axes_6" transform="translate(0 10)">
    <g id="patch_17">
     <path d="M 916.133964 599.870052
 L 1276.56 599.870052
@@ -1683,7 +1683,7 @@ L 1268.055713 526.281014
     </g>
    </g>
   </g>
-  <g id="axes_7">
+  <g id="axes_7" transform="translate(0 10)">
    <g id="patch_20">
     <path d="M 58.32 869.94
 L 418.746036 869.94
@@ -1975,7 +1975,7 @@ L 410.241749 771.654735
     </g>
    </g>
   </g>
-  <g id="axes_8">
+  <g id="axes_8" transform="translate(0 10)">
    <g id="patch_23">
     <path d="M 487.226982 869.94
 L 847.653018 869.94
@@ -2259,7 +2259,7 @@ L 839.148731 839.833974
     </g>
    </g>
   </g>
-  <g id="axes_9">
+  <g id="axes_9" transform="translate(0 10)">
    <g id="patch_26">
     <path d="M 916.133964 869.94
 L 1276.56 869.94
@@ -2561,10 +2561,10 @@ L 1268.055713 830.950539
   <g id="text_113">
    <text style="font-weight: 700; font-size: 25px; font-family: 'DejaVu Sans'; text-anchor: middle" x="648" y="33.576094" transform="rotate(-0 648 33.576094)">W4A16 GEMM Speedup over cuBLAS</text>
   </g>
-  <g id="text_114">
+  <g id="text_114" transform="translate(0 10)">
    <text style="font-size: 13px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #454a52" x="648" y="54.432" transform="rotate(-0 648 54.432)">N = K = 8192   |   SM75–SM90: INT4 × BF16 (GS=128)   |   SM100+: NVFP4 × BF16</text>
   </g>
-  <g id="text_115">
+  <g id="text_115" transform="translate(0 10)">
    <text style="font-size: 12.5px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #454a52" x="648" y="78.732" transform="rotate(-0 648 78.732)">SM75: FP16 inputs and FP16 accumulation for all kernels</text>
   </g>
   <g id="legend_1">
