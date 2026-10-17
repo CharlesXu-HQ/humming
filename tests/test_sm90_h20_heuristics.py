@@ -83,19 +83,29 @@ def test_sparse_long_k_moe_uses_mma_without_extra_row_padding(shape_n, gemm_type
     assert populated.get("mma_type", "wgmma") == "wgmma"
 
 
-@pytest.mark.parametrize("shape_m", [4096, 12288, 24576])
+@pytest.mark.parametrize(
+    ("shape_m", "block_shape", "warp_shape", "num_ctas", "use_stream_k"),
+    [
+        (3072, (40, 256, 64), (40, 64, 64), 2, True),
+        (3840, (48, 128, 64), (48, 32, 64), 3, False),
+        (12288, (48, 128, 64), (48, 32, 64), 3, False),
+        (24576, (48, 128, 64), (48, 32, 64), 3, False),
+    ],
+)
 @pytest.mark.parametrize("a_dtype", [dtypes.float16, dtypes.bfloat16])
-def test_large_mxfp4_grouped_contiguous_uses_three_resident_ctas(shape_m, a_dtype):
+def test_mxfp4_grouped_contiguous_selects_residency_for_expert_tiles(
+    shape_m, block_shape, warp_shape, num_ctas, use_stream_k, a_dtype
+):
     config = Sm90H20Heuristics.get_config(
         _mxfp4_layer(4608, 5120, a_dtype),
         shape_m,
         gemm_type=GemmType.GROUPED_CONTIGUOUS,
     )
 
-    assert config["block_shape"] == (48, 128, 64)
-    assert config["warp_shape"] == (48, 32, 64)
-    assert config["num_ctas_per_sm"] == 3
-    assert not config["use_stream_k"]
+    assert config["block_shape"] == block_shape
+    assert config["warp_shape"] == warp_shape
+    assert config["num_ctas_per_sm"] == num_ctas
+    assert config["use_stream_k"] is use_stream_k
 
 
 @pytest.mark.parametrize("a_dtype", [dtypes.float16, dtypes.bfloat16, dtypes.float8e4m3, dtypes.int8])

@@ -6,6 +6,7 @@ import numpy as np
 from humming import dtypes
 from humming.config import GemmType, LayerConfig
 from humming.device import current_device
+from humming.tune.raster import get_moe_raster_group_m
 from humming.utils.math import round_up
 from humming.utils.smem import estimate_smem_size_layer
 
@@ -401,7 +402,7 @@ class DeviceHeuristics:
                 max_blocks_m = min(shape_m, max_blocks_m)
             num_sms = min(num_sms, math.ceil(num_blocks_n * max_blocks_m / num_ctas_per_sm))
 
-        return {
+        config = {
             "block_shape": (block_shape_m, block_shape_n, block_shape_k),
             "warp_shape": (warp_shape_m, warp_shape_n, warp_shape_k),
             "use_stream_k": use_stream_k,
@@ -412,6 +413,14 @@ class DeviceHeuristics:
             "output_chunk_rows": output_chunk_rows,
             "use_pdl": cls.sm_version >= 90,
         }
+        is_fp8 = layer_config.a_dtype in (dtypes.float8e4m3, dtypes.float8e5m2)
+        is_fp8 &= layer_config.a_dtype == layer_config.b_dtype
+        use_grouped_raster = cls.sm_version == 89 and gemm_type == GemmType.GROUPED_CONTIGUOUS
+        if use_grouped_raster and is_fp8 and layer_config.is_block_weight_scale:
+            config["raster_group_m"] = get_moe_raster_group_m(
+                shape_m, layer_config.num_experts, block_shape_m, group_m=2, min_m_tiles=2
+            )
+        return config
 
     @staticmethod
     @functools.lru_cache(maxsize=128)

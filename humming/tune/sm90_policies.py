@@ -18,6 +18,7 @@ from humming.tune.candidate import (
     fit_pipeline_stages,
     get_problem_rejection_reasons,
 )
+from humming.tune.raster import get_moe_raster_group_m
 from humming.utils.smem import estimate_smem_size_layer
 
 
@@ -577,8 +578,13 @@ def get_overlap_config(
     scores = relative_work.mean(axis=1)
     config = configs[int(np.argmin(scores))]
     block_m, block_n, _ = config["block_shape"]
-    if not is_dense and block_m >= 48 and block_n == 256:
+    use_a16_raster = can_overlap_a16 and gemm_type != GemmType.INDEXED
+    use_wide_raster = gemm_type == GemmType.GROUPED_CONTIGUOUS and block_m >= 48 and block_n == 256
+    if use_a16_raster or use_wide_raster:
         config["raster_group_m"] = 4
+    is_fp8 = layer.a_dtype in (dtypes.float8e4m3, dtypes.float8e5m2)
+    if can_overlap_block and is_fp8 and not is_dense:
+        config["raster_group_m"] = get_moe_raster_group_m(shape_m, layer.num_experts, block_m)
     return config
 
 
@@ -719,6 +725,8 @@ def get_block_scaled_moe_config(
         return None
     block_m = best[1]
 
+    raster_group_m = get_moe_raster_group_m(shape_m, layer_config.num_experts, block_m)
+
     config = {
         "mma_type": MmaType.WGMMA.value,
         "block_shape": (block_m, block_n, 128),
@@ -731,7 +739,7 @@ def get_block_scaled_moe_config(
         "use_tma_c": use_warp_spec and not short_k,
         "smem_reuse_mode": "none",
         "wgmma_split_issue_wait": not use_warp_spec,
-        "raster_group_m": 1,
+        "raster_group_m": raster_group_m,
     }
     if short_k or use_stream_k:
         config["producer_stage_unroll"] = 2
@@ -746,6 +754,7 @@ def get_block_scaled_moe_config(
         smem_reuse_mode="none",
         use_tma=True,
         use_warp_spec=use_warp_spec,
+        raster_group_m=raster_group_m,
     )
     if smem_size * resident_ctas > 227 * 1024:
         return None

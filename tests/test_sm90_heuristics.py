@@ -288,7 +288,11 @@ def test_mxfp4_a16_indexed_preserves_warp_k_and_fits_grid(
 
 
 @pytest.mark.parametrize("shape_k", [512, 256])
-def test_mxfp4_a16_short_k_limits_wide_n_tile_before_block_m48(shape_k):
+@pytest.mark.parametrize(
+    ("shape_m", "block_m", "block_n", "num_ctas"),
+    [(6144, 32, 512, 2), (8192, 40, 512, 1), (10240, 48, 256, 2), (12288, 64, 256, 2)],
+)
+def test_mxfp4_a16_short_k_limits_wide_n_tile_before_block_m48(shape_k, shape_m, block_m, block_n, num_ctas):
     layer = _layer(
         6144,
         shape_k,
@@ -298,21 +302,17 @@ def test_mxfp4_a16_short_k_limits_wide_n_tile_before_block_m48(shape_k):
         input_scale_group_size=0,
     )
 
-    small = Sm90Heuristics.get_config(
+    config = Sm90Heuristics.get_config(
         layer,
-        shape_m=6144,
-        gemm_type=GemmType.INDEXED,
-    )
-    large = Sm90Heuristics.get_config(
-        layer,
-        shape_m=10240,
+        shape_m=shape_m,
         gemm_type=GemmType.INDEXED,
     )
 
-    assert small["block_shape"] == (32, 512, 64)
-    assert small["num_ctas_per_sm"] == 2
-    assert large["block_shape"] == (48, 256, 64)
-    assert large["num_ctas_per_sm"] == 2
+    assert config["block_shape"] == (block_m, block_n, 64)
+    assert config["num_ctas_per_sm"] == num_ctas
+    tuning_fields = TuningConfig.get_field_names()
+    tuning = TuningConfig(**{key: value for key, value in config.items() if key in tuning_fields})
+    assert get_register_budget_error(layer, tuning, registers_per_sm=65536) is None
 
 
 def test_nvfp4_a16_uses_narrow_first_wave_only():

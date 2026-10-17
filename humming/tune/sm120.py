@@ -4,6 +4,7 @@ from humming import dtypes
 from humming.config import GemmType, MmaType
 from humming.config.mma import get_default_mma_type
 from humming.device import current_device
+from humming.tune.raster import get_moe_raster_group_m
 from humming.tune.sm8x import Sm89Heuristics
 from humming.utils.math import round_up
 from humming.utils.smem import estimate_smem_size_layer
@@ -232,6 +233,12 @@ class Sm120Heuristics(Sm89Heuristics):
         cls._tune_small_tile_transfers(layer_config, config, gemm_type, shape_m)
         if is_wna16:
             cls._tune_moe_w4a16(layer_config, config, gemm_type, shape_m)
+        is_fp8 = a in (dtypes.float8e4m3, dtypes.float8e5m2) and a == layer_config.b_dtype
+        use_grouped_raster = cls.sm_version == 120 and gemm_type == GemmType.GROUPED_CONTIGUOUS
+        if use_grouped_raster and is_fp8 and layer_config.is_block_weight_scale:
+            config["raster_group_m"] = get_moe_raster_group_m(
+                shape_m, layer_config.num_experts, config["block_shape"][0], group_m=4, min_m_tiles=2
+            )
         return config
 
     @classmethod
