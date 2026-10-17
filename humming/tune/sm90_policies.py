@@ -1116,7 +1116,7 @@ def get_scaled_a8_config(
         return None
     is_grouped = gemm_type in (GemmType.GROUPED_CONTIGUOUS, GemmType.GROUPED_MASKED)
     has_grouped_block_scale = is_grouped and layer_config.is_block_weight_scale
-    if has_grouped_block_scale and (is_h20 or gemm_type == GemmType.GROUPED_MASKED):
+    if has_grouped_block_scale and is_h20:
         return None
     if layer_config.shape_n % 128 or layer_config.shape_k % 128:
         return None
