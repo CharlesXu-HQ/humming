@@ -123,7 +123,7 @@ vllm serve openai/gpt-oss-20b --quantization-config.moe.activation mxfp8
 
 得益于统一架构，Humming 能够覆盖广泛的 GPU 设备。对于 NVIDIA GPU，Humming 完整支持从 Turing 起的所有 GPU 架构，让不同代际的设备都能使用同一套量化计算框架。
 
-统一的 JIT 架构也让 Humming 能够方便地扩展到兼容 CUDA 编程的其他 GPU。目前，Humming 已完整支持平头哥 PPU 810 系列，包括 ZW-810 和 ZW-810E，将统一的内核与调优能力带到更多硬件平台。
+统一的 JIT 架构也让 Humming 能够方便地扩展到兼容 CUDA 编程的其他 GPU。目前，Humming 已完整支持平头哥 Zhenwu 810E，将统一的内核与调优能力带到更多硬件平台。
 
 下图列出了 Humming 在各类设备上支持的高性能激活类型，即能够充分发挥对应设备最高计算性能的类型。部分未列出的类型仍可通过其他指令路径运行。例如，B300（SM103）的 UMMA 指令不再支持 INT8 计算，但仍可使用较早的 MMA 指令执行 INT8 GEMM，只是性能会明显降低。
 
@@ -145,14 +145,19 @@ Humming 还支持一种指数位数为 0 的特殊浮点格式，其取值范围
 
 ### 性能
 
-下图比较各 GPU 上 W4A16 GEMM 相对 cuBLAS 的加速比，M 覆盖 1 到 8192 的所有 2 的幂。
+下图比较各 GPU 上 Dense W4A16 GEMM 相对 cuBLAS 的加速比，M 覆盖 1 到 8192 的所有 2 的幂。
 
 <p align="center">
   <a href="humming-w4a16-performance-en.svg"><img src="humming-w4a16-performance-en.svg" alt="各 GPU 上 W4A16 GEMM 相对 cuBLAS 的加速比" width="1200"></a>
 </p>
 
+下图展示 MoE W4A16 内核相对 vLLM Marlin 的加速比，采用 256 个专家、top_k=8 和 BF16 激活，M 同样覆盖 1 到 8192 的所有 2 的幂。Gateup 与 Down 分别在冷 L2 缓存下测量，再将两项耗时相加计算加速比；图例标明各内核采用的 Indexed 或 Grouped 布局。
 
-TODO: W4A16 MoE / W4A8 / W8A8 / W4A4
+<p align="center">
+  <a href="humming-w4a16-moe-performance-en.svg"><img src="humming-w4a16-moe-performance-en.svg" alt="MoE W4A16 内核的 Gateup 与 Down 合计耗时相对 vLLM Marlin 的加速比" width="1200"></a>
+</p>
+
+TODO: W4A8 / W8A8 / W4A4
 
 ## 未来计划
 

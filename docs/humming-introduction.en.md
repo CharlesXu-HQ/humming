@@ -123,7 +123,7 @@ vllm serve openai/gpt-oss-20b --quantization-config.moe.activation mxfp8
 
 Humming's unified architecture enables broad GPU support. For NVIDIA GPUs, Humming fully supports every architecture from Turing onward, bringing a common quantized computing framework to multiple generations of hardware.
 
-The unified JIT architecture also makes it straightforward to extend Humming to other GPUs compatible with CUDA programming. Humming already fully supports T-Head's PPU 810 Series, including the ZW-810 and ZW-810E, bringing its shared kernels and tuning capabilities to more hardware platforms.
+The unified JIT architecture also makes it straightforward to extend Humming to other GPUs compatible with CUDA programming. Humming already fully supports T-Head's Zhenwu 810E, bringing its shared kernels and tuning capabilities to more hardware platforms.
 
 The figure below shows the high-performance activation types supported by Humming on each device: types that can take full advantage of the device's peak compute capabilities. Some types omitted from the figure can still run through other instruction paths. For example, UMMA instructions on the B300 (SM103) no longer support INT8 computation, but earlier MMA instructions can still execute INT8 GEMM, with substantially lower performance.
 
@@ -145,15 +145,19 @@ Humming also supports a special floating-point format with zero exponent bits, w
 
 ### Performance
 
-The following figure compares W4A16 GEMM speedups over cuBLAS across GPUs, with M covering every power of two from 1 to 8192.
+The following figure compares Dense W4A16 GEMM speedups over cuBLAS across GPUs, with M covering every power of two from 1 to 8192.
 
 <p align="center">
   <a href="humming-w4a16-performance-en.svg"><img src="humming-w4a16-performance-en.svg" alt="W4A16 GEMM speedups over cuBLAS across GPUs" width="1200"></a>
 </p>
 
+The following figure compares MoE W4A16 kernels against vLLM Marlin, using 256 experts, top_k=8, and BF16 activations, with M again covering every power of two from 1 to 8192. Gateup and Down are measured independently with a cold L2 cache, and their latencies are summed to calculate speedup. The legend identifies each kernel's Indexed or Grouped layout.
 
+<p align="center">
+  <a href="humming-w4a16-moe-performance-en.svg"><img src="humming-w4a16-moe-performance-en.svg" alt="MoE W4A16 kernel speedups over vLLM Marlin using summed Gateup and Down latencies" width="1200"></a>
+</p>
 
-TODO: W4A16 MoE / W4A8 / W8A8 / W4A4
+TODO: W4A8 / W8A8 / W4A4
 
 ## Future Plans
 
