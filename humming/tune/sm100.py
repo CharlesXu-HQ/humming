@@ -91,8 +91,8 @@ class Sm100MmaHeuristics(Sm80Heuristics):
         if block_m != warp_m:
             return config
 
-        # Small M needs little math parallelism. Use four warps per CTA and
-        # two resident CTAs instead of expanding K to fill a single CTA.
+        # Small M needs little math parallelism. Use four warps per CTA
+        # instead of expanding K to fill a single CTA.
         # Start from the existing M/N grid and Stream-K policy for dense and MoE.
         warp_n = min(64, block_n // 2)
         n_warps = block_n // warp_n
@@ -128,12 +128,47 @@ class Sm100MmaHeuristics(Sm80Heuristics):
         )
         if smem_size * 2 > cls.max_smem_size:
             return config
-        return config | {
+        config = config | {
             "block_shape": block_shape,
             "warp_shape": warp_shape,
             "num_ctas_per_sm": 2,
             "num_stages": num_stages,
         }
+        if not layer_config.num_experts or layer_config.a_dtype.num_bits != 16:
+            return config
+
+        # More resident CTAs hide memory latency across small expert tiles.
+        num_stages = max(num_stages, min(4, layer_config.shape_k // block_k))
+        if config["use_stream_k"]:
+            m_tiles = cls.estimate_num_blocks_m(layer_config, shape_m, block_m, gemm_type)
+            output_tiles = m_tiles * (layer_config.shape_n // block_n)
+            k_iters = layer_config.shape_k // block_k
+            slice_iters = math.ceil(output_tiles * k_iters / (config["num_sms"] * 4))
+            if min(slice_iters, k_iters) < 2 * num_stages:
+                return config
+        candidate = config | {"num_ctas_per_sm": 4, "num_stages": num_stages}
+        tuning = TuningConfig(
+            mma_type=MmaType.MMA,
+            block_shape=block_shape,
+            warp_shape=warp_shape,
+            num_ctas_per_sm=4,
+            num_stages=num_stages,
+            use_warp_spec=config.get("use_warp_spec", False),
+        )
+        smem_size = estimate_smem_size_layer(
+            layer_config,
+            block_shape,
+            gemm_type,
+            num_stages,
+            mma_type=MmaType.MMA,
+            warp_shape=warp_shape,
+            output_chunk_rows=config["output_chunk_rows"],
+            mma_accum_bits=16 if use_f16_accum else 32,
+        )
+        fits_registers = get_register_budget_error(layer_config, tuning, use_f16_accum) is None
+        if smem_size * 4 <= cls.max_smem_size and fits_registers:
+            return candidate
+        return config
 
 
 class Sm100UmmaHeuristics(DeviceHeuristics):
@@ -776,7 +811,11 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
     @classmethod
     @functools.lru_cache(maxsize=64)
     def _get_moe_candidates(
-        cls, layer_config: LayerConfig, gemm_type: GemmType, use_m_major_input_scale: bool = False
+        cls,
+        layer_config: LayerConfig,
+        gemm_type: GemmType,
+        use_m_major_input_scale: bool = False,
+        use_output_chunks: bool = False,
     ) -> tuple:
         candidates = []
         indexed = gemm_type == GemmType.INDEXED
@@ -801,7 +840,9 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
                     can_cooperate &= layer_config.shape_n % (2 * block_n) == 0
                     for cta_group_size in (1, 2) if can_cooperate else (1,):
                         for block_m in range(8 * cta_group_size, max_block_m + 1, 8 * cta_group_size):
-                            use_chunks = layer_config.use_raw_weight and (block_m > 32 or cta_group_size == 2)
+                            use_chunks = use_output_chunks and layer_config.a_dtype.num_bits == 16
+                            use_chunks |= layer_config.use_raw_weight
+                            use_chunks &= block_m > 32 or cta_group_size == 2
                             output_chunk_rows = 32 if use_chunks else 0
                             shape = (block_m, block_n, block_k)
                             for stages in range(max_stages, min_stages - 1, -1):
@@ -832,12 +873,10 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
                                     "use_stream_k": False,
                                     "use_pdl": False,
                                     "raster_group_m": 1,
+                                    "output_chunk_rows": output_chunk_rows,
                                 }
                                 if layer_config.use_raw_weight:
-                                    config.update(
-                                        umma_cta_group_size=cta_group_size,
-                                        output_chunk_rows=output_chunk_rows,
-                                    )
+                                    config["umma_cta_group_size"] = cta_group_size
                                 candidates.append(config)
                                 # Use the deepest legal pipeline for each tile.
                                 break
@@ -863,8 +902,15 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
         counts = cls._sample_expert_rows(shape_m, layer_config.num_experts, cls.expert_probability_cv)
         num_sms = current_device.sm_count
         typical_expert_rows = float(np.median(counts))
+        # Sparse TMA output grids cannot amortize multiple stores per tile.
+        minimum_m_tiles = ((counts + 255) // 256).sum(axis=1).mean()
+        minimum_output_tiles = minimum_m_tiles * math.ceil(layer_config.shape_n / 256)
+        use_output_chunks = gemm_type == GemmType.INDEXED or minimum_output_tiles >= 4 * num_sms
         best_by_residency = {}
-        for config in cls._get_moe_candidates(layer_config, gemm_type, use_m_major_input_scale):
+        candidates = cls._get_moe_candidates(
+            layer_config, gemm_type, use_m_major_input_scale, use_output_chunks
+        )
+        for config in candidates:
             block_m, block_n, block_k = config["block_shape"]
             num_ctas = config["num_ctas_per_sm"]
             if layer_config.use_raw_weight and num_ctas == 1 and typical_expert_rows < block_m:
