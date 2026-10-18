@@ -437,7 +437,12 @@ def get_compact_moe_config(
 
     block_m, block_n, block_k = config["block_shape"]
     has_single_warpgroup = tuple(config["warp_shape"]) == (block_m, block_n // 4, block_k)
-    if block_m > 32 or block_k != 64 or not has_single_warpgroup:
+    has_two_warpgroups = tuple(config["warp_shape"]) == (block_m, block_n // 8, block_k)
+    is_grouped = gemm_type in (GemmType.GROUPED_CONTIGUOUS, GemmType.GROUPED_MASKED)
+    can_compact_single = has_single_warpgroup and block_m <= 32
+    has_grouped_warpgroups = is_grouped and (has_single_warpgroup or has_two_warpgroups)
+    can_compact_grouped = has_grouped_warpgroups and not can_compact_single
+    if block_k != 64 or not (can_compact_single or can_compact_grouped):
         return config
 
     num_ctas = max(2, config.get("num_ctas_per_sm", 1))
@@ -446,10 +451,15 @@ def get_compact_moe_config(
         "use_warp_spec": False,
         "use_tma": False,
         "use_tma_c": False,
-        "smem_reuse_mode": "all_stages",
-        "producer_stage_unroll": config["num_stages"],
-        "wgmma_split_issue_wait": False,
     }
+    if can_compact_grouped:
+        candidate["num_stages"] = max(6, config["num_stages"])
+    else:
+        candidate |= {
+            "smem_reuse_mode": "all_stages",
+            "producer_stage_unroll": config["num_stages"],
+            "wgmma_split_issue_wait": False,
+        }
     candidate = fit_sm90_tile(
         layer_config,
         candidate,
@@ -459,7 +469,8 @@ def get_compact_moe_config(
     keeps_tile = tuple(candidate["block_shape"]) == tuple(config["block_shape"])
     keeps_warp = tuple(candidate["warp_shape"]) == tuple(config["warp_shape"])
     keeps_residency = candidate["num_ctas_per_sm"] == num_ctas
-    return candidate if keeps_tile and keeps_warp and keeps_residency else config
+    keeps_pipeline = not can_compact_grouped or candidate["num_stages"] >= config["num_stages"]
+    return candidate if keeps_tile and keeps_warp and keeps_residency and keeps_pipeline else config
 
 
 def get_overlap_config(
@@ -516,6 +527,7 @@ def get_overlap_config(
             return None
 
     can_widen_unpacked = is_unpacked_a8 and not is_dense and not layer.is_group_input_scale
+    can_widen_grouped_a16 = can_overlap_a16 and not is_h20 and gemm_type != GemmType.INDEXED
     configs = []
     costs = []
     for block_n in (128, 256):
@@ -532,6 +544,8 @@ def get_overlap_config(
                 max_m = min(max_m, 64 if layer.is_group_input_scale else 96)
         else:
             max_m = 64 if is_h20 or layer.is_group_input_scale else 96
+            if can_widen_grouped_a16 and shape_m > layer.num_experts * max_m:
+                max_m = 176
             if can_overlap_packed:
                 max_m = 160 if block_n == 128 else 48
             if can_widen_unpacked:
@@ -616,6 +630,17 @@ def get_overlap_config(
     is_fp8 = layer.a_dtype in (dtypes.float8e4m3, dtypes.float8e5m2)
     if can_overlap_block and is_fp8 and not is_dense:
         config["raster_group_m"] = get_moe_raster_group_m(shape_m, layer.num_experts, block_m)
+    can_widen_indexed_a16 = is_a16 and gemm_type == GemmType.INDEXED and block_n < 512
+    if can_widen_indexed_a16 and layer.shape_n % 512 == 0:
+        wide_config = config | {
+            "block_shape": (block_m, 512, block_k),
+            "warp_shape": (block_m, 32, block_k),
+        }
+        wide_m_tiles = ((distributions[1] + block_m - 1) // block_m).sum(axis=1).mean()
+        wide_output_tiles = wide_m_tiles * (layer.shape_n // 512)
+        fitted = fit_sm90_tile(layer, wide_config, gemm_type=gemm_type)
+        if wide_output_tiles >= num_sms and fitted == wide_config:
+            config = wide_config
     return config
 
 

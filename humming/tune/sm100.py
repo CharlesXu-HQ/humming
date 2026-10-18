@@ -147,27 +147,42 @@ class Sm100MmaHeuristics(Sm80Heuristics):
             if min(slice_iters, k_iters) < 2 * num_stages:
                 return config
         candidate = config | {"num_ctas_per_sm": 4, "num_stages": num_stages}
-        tuning = TuningConfig(
-            mma_type=MmaType.MMA,
-            block_shape=block_shape,
-            warp_shape=warp_shape,
-            num_ctas_per_sm=4,
-            num_stages=num_stages,
-            use_warp_spec=config.get("use_warp_spec", False),
-        )
-        smem_size = estimate_smem_size_layer(
-            layer_config,
-            block_shape,
-            gemm_type,
-            num_stages,
-            mma_type=MmaType.MMA,
-            warp_shape=warp_shape,
-            output_chunk_rows=config["output_chunk_rows"],
-            mma_accum_bits=16 if use_f16_accum else 32,
-        )
-        fits_registers = get_register_budget_error(layer_config, tuning, use_f16_accum) is None
-        if smem_size * 4 <= cls.max_smem_size and fits_registers:
-            return candidate
+        candidates = [candidate]
+        can_widen_indexed_tile = gemm_type == GemmType.INDEXED and block_m <= 16 and block_n < 256
+        has_aligned_wide_tile = layer_config.shape_n % 256 == 0 and layer_config.shape_k % warp_k == 0
+        if can_widen_indexed_tile and has_aligned_wide_tile:
+            m_tiles = cls.estimate_num_blocks_m(layer_config, shape_m, block_m, gemm_type)
+            wide_output_tiles = m_tiles * (layer_config.shape_n // 256)
+            resident_ctas = config["num_sms"] * candidate["num_ctas_per_sm"]
+            if wide_output_tiles >= resident_ctas:
+                wide_candidate = candidate | {
+                    "block_shape": (block_m, 256, warp_k),
+                    "warp_shape": (warp_m, 64, warp_k),
+                }
+                candidates.insert(0, wide_candidate)
+
+        for candidate in candidates:
+            tuning = TuningConfig(
+                mma_type=MmaType.MMA,
+                block_shape=candidate["block_shape"],
+                warp_shape=candidate["warp_shape"],
+                num_ctas_per_sm=4,
+                num_stages=num_stages,
+                use_warp_spec=config.get("use_warp_spec", False),
+            )
+            smem_size = estimate_smem_size_layer(
+                layer_config,
+                candidate["block_shape"],
+                gemm_type,
+                num_stages,
+                mma_type=MmaType.MMA,
+                warp_shape=candidate["warp_shape"],
+                output_chunk_rows=config["output_chunk_rows"],
+                mma_accum_bits=16 if use_f16_accum else 32,
+            )
+            fits_registers = get_register_budget_error(layer_config, tuning, use_f16_accum) is None
+            if smem_size * 4 <= cls.max_smem_size and fits_registers:
+                return candidate
         return config
 
 
