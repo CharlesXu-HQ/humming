@@ -560,6 +560,7 @@ class TuningConfig(BaseHummingConfig):
 
     use_pdl: bool = False
     raster_group_m: int = 1
+    evict_weights_first: bool = False
 
     _cpp_extra_names: ClassVar[tuple[str, ...]] = (
         "mma_type_id",
