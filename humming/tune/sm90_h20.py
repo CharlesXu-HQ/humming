@@ -400,6 +400,11 @@ class Sm90H20Heuristics(DeviceHeuristics):
         num_blocks_m = cls.estimate_num_blocks_m(layer_config, shape_m, block_shape_m, gemm_type)
 
         num_sms = current_device.sm_count
+        max_num_stages = 4
+        use_stream_k = layer_config.shape_k > 1024 and not use_batch_invariant
+        can_split_dense_k = not is_moe and a_dtype.num_bits == 16 and not use_f16_accum
+        can_split_dense_k &= use_stream_k
+        has_stream_k_parallelism = False
         while num_blocks_n * num_blocks_m * 2 < num_sms * num_ctas_per_sm:
             if warp_shape_n == 64:
                 warp_shape_n = warp_shape_n // 2
@@ -409,6 +414,15 @@ class Sm90H20Heuristics(DeviceHeuristics):
                     num_ctas_per_sm = 3
                 continue
             elif num_ctas_per_sm > 1:
+                if can_split_dense_k:
+                    # Reserve three pipeline turns per CTA after widening the K tile.
+                    slice_block_k = max(block_shape_k, 2 * warp_shape_k)
+                    num_k_iters = layer_config.shape_k // slice_block_k
+                    total_k_iters = num_blocks_n * num_blocks_m * num_k_iters
+                    min_slice_iters = 3 * max_num_stages
+                    if total_k_iters >= num_sms * num_ctas_per_sm * min_slice_iters:
+                        has_stream_k_parallelism = True
+                        break
                 num_ctas_per_sm = num_ctas_per_sm - 1
                 continue
             else:
@@ -423,7 +437,7 @@ class Sm90H20Heuristics(DeviceHeuristics):
             warp_shape_k = 512 // layer_config.a_dtype.num_bits
             block_shape_k = warp_shape_k * 2
 
-        if num_warps <= 8 and block_shape_m <= 32:
+        if num_warps <= 8 and block_shape_m <= 32 and not has_stream_k_parallelism:
             if is_moe and warp_shape_n == 64:
                 warp_shape_n = warp_shape_n // 2
             else:
@@ -447,7 +461,6 @@ class Sm90H20Heuristics(DeviceHeuristics):
                 block_shape_k = block_shape_k * 2
                 warp_shape_k = warp_shape_k * 2
 
-        max_num_stages = 4
         for num_stages_new in range(num_stages + 1, max_num_stages + 1):
             block_shape = (block_shape_m, block_shape_n, block_shape_k)
             smem_size = estimate_smem_size_layer(layer_config, block_shape, gemm_type, num_stages_new)
@@ -465,7 +478,6 @@ class Sm90H20Heuristics(DeviceHeuristics):
             warp_shape_m = block_shape_m
             num_blocks_m = math.ceil(shape_m / block_shape_m)
 
-        use_stream_k = layer_config.shape_k > 1024 and not use_batch_invariant
         if use_stream_k and num_ctas_per_sm == 1:
             factor = min(4.5, layer_config.shape_k / (3 * block_shape_k))
             # Keep at least two stage-4 turns per Stream-K slice.

@@ -739,7 +739,17 @@ def get_block_scaled_moe_config(
     # Account for per-expert padding and incomplete waves before using larger tiles.
     counts = DeviceHeuristics.get_expert_rows(layer_config, shape_m, gemm_type, expert_probability_cv)
     resident_blocks = current_device.sm_count * resident_ctas
-    block_m_candidates = (80, 96) if block_m == 96 else (block_m,)
+    if short_k:
+        block_m_candidates = (80, 96) if block_m == 96 else (block_m,)
+    else:
+        # Preserve the pipeline crossover while comparing its M tiles.
+        base_m_tiles = ((counts + block_m - 1) // block_m).sum(axis=1)
+        base_utilization = counts.sum(axis=1) / (base_m_tiles * block_m)
+        if base_utilization.mean() < 2 / 3:
+            return None
+        base_output_tiles = base_m_tiles * (shape_n // block_n)
+        has_large_grid = base_output_tiles.mean() >= 16 * resident_blocks
+        block_m_candidates = tuple(range(8, block_m + 1, 8)) if has_large_grid else (block_m,)
     best = None
     for candidate_m in block_m_candidates:
         m_tiles = ((counts + candidate_m - 1) // candidate_m).sum(axis=1)

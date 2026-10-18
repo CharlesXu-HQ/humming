@@ -835,6 +835,9 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
                     )
                     max_block_m = min(256, 512 // (output_groups * num_ctas) - 2 * operand_columns)
                     min_stages = min(3, max(2, k_iters))
+                    is_native_a8 = layer_config.use_raw_weight and layer_config.a_dtype.num_bits == 8
+                    if is_native_a8 and num_ctas == 1:
+                        min_stages = min(4, max(2, k_iters))
                     max_stages = min(5 if layer_config.use_raw_weight else 4, max(2, k_iters))
                     can_cooperate = layer_config.use_raw_weight and num_ctas == 1
                     can_cooperate &= layer_config.shape_n % (2 * block_n) == 0
@@ -901,7 +904,6 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
         # The launcher selects grouped kernels using valid_shape_m when supplied.
         counts = cls._sample_expert_rows(shape_m, layer_config.num_experts, cls.expert_probability_cv)
         num_sms = current_device.sm_count
-        typical_expert_rows = float(np.median(counts))
         # Sparse TMA output grids cannot amortize multiple stores per tile.
         minimum_m_tiles = ((counts + 255) // 256).sum(axis=1).mean()
         minimum_output_tiles = minimum_m_tiles * math.ceil(layer_config.shape_n / 256)
@@ -913,10 +915,6 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
         for config in candidates:
             block_m, block_n, block_k = config["block_shape"]
             num_ctas = config["num_ctas_per_sm"]
-            if layer_config.use_raw_weight and num_ctas == 1 and typical_expert_rows < block_m:
-                # Give up the second resident CTA only when a typical expert
-                # fills the wider M tile, rather than mostly padding it.
-                continue
             cta_group_size = config.get("umma_cta_group_size", 1)
             resident_ctas = (num_sms // cta_group_size) * num_ctas
             m_tiles = ((counts + block_m - 1) // block_m).sum(axis=1)
@@ -946,11 +944,20 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
                 if use_stream_k:
                     work = stream_work
 
-            # Each tile pays shared activation/synchronization work in addition
-            # to N-dependent conversion. A wider N amortizes that fixed cost.
-            tile_rounds = work / k_iters * (block_n + 32)
-            padded_work = tile_rounds * num_ctas * block_m
-            score = float(np.sqrt(tile_rounds * padded_work).mean())
+            # Cooperative CTAs share the issue overhead of one wider output tile.
+            tile_rounds = work / k_iters * (block_n + 32 / cta_group_size)
+            # Narrow native tiles still pay fixed issue, scale-copy and barrier costs.
+            has_native_scales = layer_config.use_raw_weight and layer_config.use_block_scaled_mma
+            compute_rows = max(block_m, 32) if has_native_scales else block_m
+            padded_work = tile_rounds * num_ctas * compute_rows
+            operand_work = tile_rounds
+            if layer_config.use_raw_weight and layer_config.a_dtype.num_bits == 8:
+                # Replace the fixed A/issue allowance once valid A rows exceed it.
+                activation_columns = counts.sum(axis=1) / m_tiles
+                activation_columns *= layer_config.a_dtype.num_bits / layer_config.b_dtype.num_bits
+                activation_columns = np.maximum(32, activation_columns) / cta_group_size
+                operand_work = work / k_iters * (block_n + activation_columns)
+            score = float(np.sqrt(operand_work * padded_work).mean())
             pipeline_penalty = 1 + 1 / stages
             score *= pipeline_penalty
             config = config | {"use_stream_k": use_stream_k}
