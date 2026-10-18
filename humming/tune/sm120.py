@@ -245,6 +245,9 @@ class Sm120Heuristics(Sm89Heuristics):
             config["raster_group_m"] = get_moe_raster_group_m(
                 shape_m, layer_config.num_experts, config["block_shape"][0], group_m=4, min_m_tiles=2
             )
+        # A single M tile reads each weight tile once; keep the stream from evicting reused data in L2.
+        # For MoE, use the average rows per expert.
+        config["evict_weights_first"] = shape_m / (layer_config.num_experts or 1) <= config["block_shape"][0]
         return config
 
     @classmethod
