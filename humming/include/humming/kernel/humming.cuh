@@ -169,8 +169,16 @@ __global__ __launch_bounds__(TuningConfig::kNumThreads, TuningConfig::kNumCtasPe
           if (warp_iter_id == Ctx::kWarpIters - 1 && remaining_iters > 1) {
             consumer.wait_stage((stage_id + 1) % kNumStages);
           }
-          s2r_pipe.load_stage_iter(stage_id, warp_iter_id + 1);
-          if constexpr (Ctx::kWarpIters > 1) mma.run(stage_id, warp_iter_id);
+          constexpr bool kDeferScalePrefetch = Ctx::kUseWgmma && ElementA::kBits < 16 &&
+                                               (Ctx::kPreserveASForPromotion || Ctx::kPreserveBSForPromotion);
+          if constexpr (kDeferScalePrefetch) {
+            s2r_pipe.load_stage_iter_data(stage_id, warp_iter_id + 1);
+            if constexpr (Ctx::kWarpIters > 1) mma.run(stage_id, warp_iter_id);
+            s2r_pipe.load_stage_iter_scales(stage_id, warp_iter_id + 1);
+          } else {
+            s2r_pipe.load_stage_iter(stage_id, warp_iter_id + 1);
+            if constexpr (Ctx::kWarpIters > 1) mma.run(stage_id, warp_iter_id);
+          }
           if (Ctx::kWarpIters > 1 && warp_iter_id == Ctx::kWarpIters - 2) {
             __syncthreads();
             if constexpr (kNumStages > 2) {

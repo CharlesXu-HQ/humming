@@ -233,6 +233,7 @@ class Sm120Heuristics(Sm89Heuristics):
         cls._tune_small_tile_transfers(layer_config, config, gemm_type, shape_m)
         if is_wna16:
             cls._tune_moe_w4a16(layer_config, config, gemm_type, shape_m)
+        cls._tune_short_moe_residency(layer_config, config, gemm_type, shape_m, use_m_major_input_scale)
         previous_block_m = config["block_shape"][0]
         cls._tune_moe_tiles(layer_config, config, gemm_type, shape_m, use_m_major_input_scale)
         should_align_scales = not config.get("use_warp_spec", False)
@@ -249,6 +250,49 @@ class Sm120Heuristics(Sm89Heuristics):
         # For MoE, use the average rows per expert.
         config["evict_weights_first"] = shape_m / (layer_config.num_experts or 1) <= config["block_shape"][0]
         return config
+
+    @classmethod
+    def _tune_short_moe_residency(
+        cls, layer_config, config, gemm_type, shape_m, use_m_major_input_scale
+    ) -> None:
+        if gemm_type != GemmType.INDEXED or get_default_mma_type(layer_config) != MmaType.MXMMA:
+            return
+        block_m, block_n, block_k = config["block_shape"]
+        warp_k = config["warp_shape"][2]
+        if block_m > 32 or config.get("use_stream_k", False):
+            return
+        if config.get("num_ctas_per_sm", 1) != 1:
+            return
+        if cls.sm_version == 121 and layer_config.a_dtype.num_bits == 8:
+            return
+
+        candidate_k = max(warp_k, 4 * layer_config.input_scale_group_size)
+        max_k_iters = 2 if layer_config.a_dtype.num_bits == 4 else 4
+        if layer_config.shape_k > max_k_iters * candidate_k or layer_config.shape_k % candidate_k:
+            return
+        candidate_n = min(256, block_n * (block_k // warp_k))
+        if candidate_n < 128 or layer_config.shape_n % candidate_n:
+            return
+        m_tiles = cls.estimate_num_blocks_m(layer_config, shape_m, block_m, gemm_type)
+        if m_tiles * (layer_config.shape_n // candidate_n) < 2 * current_device.sm_count:
+            return
+
+        # Move intra-CTA K parallelism into independently scheduled four-warp CTAs.
+        candidate = config | {
+            "block_shape": (block_m, candidate_n, candidate_k),
+            "warp_shape": (block_m, candidate_n // 4, candidate_k),
+            "num_ctas_per_sm": 2,
+            "num_stages": 2,
+            "use_tma": True,
+            "use_tma_a": False,
+            "use_tma_c": False,
+            "use_tma_as": False,
+            "use_tma_as2": False,
+            "use_warp_spec": False,
+            "smem_reuse_mode": "all_stages",
+        }
+        if cls._fit_moe_tile_pipeline(layer_config, candidate, gemm_type, use_m_major_input_scale):
+            config.update(candidate)
 
     @classmethod
     def _align_moe_scale_tiles(cls, layer_config, config, gemm_type, use_m_major_input_scale) -> None:

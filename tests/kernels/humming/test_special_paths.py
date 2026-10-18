@@ -261,6 +261,53 @@ def test_special_weight_path(required_features, test_case):
     assert_kernel_test_shape_coverage(results)
 
 
+@pytest.mark.parametrize("shape_k", [128, 256, 384, 512])
+@pytest.mark.parametrize("gemm_type", list(GemmType))
+@pytest.mark.parametrize("use_fused_weight_scale", [False, True])
+def test_wgmma_scale_prefetch(shape_k, gemm_type, use_fused_weight_scale, monkeypatch):
+    skip_if_unsupported(a_dtype=dtypes.float8e4m3, mma_type="wgmma")
+    is_grouped = gemm_type in (GemmType.GROUPED_CONTIGUOUS, GemmType.GROUPED_MASKED)
+    layer = LayerConfig(
+        shape_n=256,
+        shape_k=shape_k,
+        num_experts=0 if gemm_type == GemmType.DENSE else 4,
+        a_dtype=dtypes.float8e4m3,
+        b_dtype=dtypes.float4e2m1 if use_fused_weight_scale else dtypes.uint4,
+        c_dtype=dtypes.bfloat16,
+        as_dtype=dtypes.float32,
+        bs_dtype=dtypes.float8e8m0 if use_fused_weight_scale else dtypes.bfloat16,
+        input_quant_mode="dynamic_group",
+        input_scale_group_size=128,
+        weight_scale_group_size=32 if use_fused_weight_scale else 128,
+        sm_version=90,
+    )
+    config = dict(
+        mma_type="wgmma",
+        block_shape=(8, 128, 128),
+        warp_shape=(8, 32, 128),
+        num_stages=3,
+        num_ctas_per_sm=1,
+        num_sms=6,
+        use_stream_k=False,
+        use_tma=False,
+        use_warp_spec=False,
+        wgmma_use_late_as=False,
+        wgmma_split_issue_wait=False,
+    )
+    monkeypatch.setenv("HUMMING_TEST_TUNING_SOURCE", "heuristic")
+    monkeypatch.setattr("humming.testing.tuning.get_heuristics_config", lambda *args, **kwargs: config)
+    case = KernelTestCase(
+        name="wgmma-scale-prefetch",
+        layer_config=layer,
+        compute_config=ComputeConfig(gemm_type=gemm_type, use_m_major_input_scale=is_grouped),
+        top_k=1 if gemm_type == GemmType.DENSE else 2,
+        seed=2026,
+    )
+    shape_ms = (1, 17)
+    results = KernelTestRunner(case).run(shape_ms)
+    assert_kernel_test_shape_coverage(results, shape_ms)
+
+
 def test_special_weight_path_coverage():
     assert {feature for features, _ in SPECIAL_WEIGHT_CASES for feature in features} == SPECIAL_FEATURES
 

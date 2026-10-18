@@ -760,6 +760,13 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
     def _select_grouped_epilogue(
         cls, layer_config, shape_m, config, gemm_type, use_m_major_input_scale=False
     ):
+        is_grouped = gemm_type in (GemmType.GROUPED_CONTIGUOUS, GemmType.GROUPED_MASKED)
+        has_native_low_bit_weights = layer_config.use_raw_weight and layer_config.a_dtype.num_bits <= 8
+        if is_grouped and has_native_low_bit_weights:
+            k_iters = layer_config.shape_k // config["block_shape"][2]
+            if k_iters <= config["num_stages"] + 1:
+                return config | {"use_tma_c": False}
+
         is_grouped_a16 = gemm_type == GemmType.GROUPED_CONTIGUOUS and layer_config.a_dtype.num_bits == 16
         if not is_grouped_a16 or layer_config.use_raw_weight or layer_config.use_flat_weight:
             return config

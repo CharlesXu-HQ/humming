@@ -700,7 +700,8 @@ def get_block_scaled_moe_config(
     has_fp8_operands = layer_config.a_dtype in fp8_dtypes and layer_config.b_dtype == layer_config.a_dtype
     has_block_scales = layer_config.is_block_weight_scale
     is_grouped = gemm_type in (GemmType.GROUPED_CONTIGUOUS, GemmType.GROUPED_MASKED)
-    if not (has_fp8_operands and has_block_scales and is_grouped):
+    has_short_indexed_reduction = is_h20 and gemm_type == GemmType.INDEXED and layer_config.shape_k <= 1024
+    if not (has_fp8_operands and has_block_scales and (is_grouped or has_short_indexed_reduction)):
         return None
     if use_f16_accum or use_batch_invariant or not layer_config.num_experts:
         return None
@@ -719,13 +720,27 @@ def get_block_scaled_moe_config(
     use_warp_spec = True
     use_stream_k = True
     short_k = shape_k <= 512
-    has_long_narrow_reduction = is_h20 and shape_n <= 1024 and shape_k >= 4096 and shape_n % 256 == 0
+    has_long_narrow_reduction = is_h20 and shape_n <= 1024 and shape_k >= 4096
     if short_k:
         block_m = 64 if is_h20 else 96
         stages = 3
     elif has_long_narrow_reduction:
-        block_m, block_n, warp_n = 64, 256, 32
-        resident_ctas = 1
+        resident_config = fit_sm90_tile(
+            layer_config,
+            {
+                "block_shape": (64, 128, 128),
+                "warp_shape": (64, 16, 128),
+                "num_stages": stages,
+                "num_ctas_per_sm": 3,
+                "use_tma": True,
+                "use_warp_spec": True,
+                "smem_reuse_mode": "none",
+            },
+            gemm_type=gemm_type,
+        )
+        block_m, block_n, _ = resident_config["block_shape"]
+        warp_n = resident_config["warp_shape"][1]
+        stages, resident_ctas = resident_config["num_stages"], resident_config["num_ctas_per_sm"]
     elif is_h20 and shape_k <= 2048:
         stages = 4
 
@@ -782,6 +797,8 @@ def get_block_scaled_moe_config(
         "wgmma_split_issue_wait": not use_warp_spec,
         "raster_group_m": raster_group_m,
     }
+    if gemm_type == GemmType.INDEXED:
+        config.update(use_tma_a=False, use_tma_c=False)
     if short_k or has_long_narrow_reduction:
         config["producer_stage_unroll"] = 2
         config["consumer_stage_unroll"] = 2 if short_k else 1
