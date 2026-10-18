@@ -1,6 +1,8 @@
 # Humming：高性能、灵活的量化推理内核
 
-Humming 由蚂蚁集团 Venus 团队与 vLLM 社区合作开发，是面向 Dense 与混合专家（MoE）量化推理的高性能 JIT 编译 GEMM 内核库。通过统一的量化表示、可复用的 CUDA 组件与面向不同设备的深度调优，Humming 将丰富的量化格式与广泛的硬件支持整合到同一套框架中，让更多模型与设备受益于高效、灵活的量化推理。
+为了让不同模型在广泛的设备上都能高效运行量化推理，蚂蚁集团与 vLLM 社区 合作开发了 Humming，一个通用、高性能的量化推理算子库。依托统一架构，Humming 将不同设备、量化格式以及 Dense 和 MoE 计算纳入同一套框架，覆盖主流设备上的绝大多数量化推理需求。在本文展示的多项基准测试中，Humming 的性能显著优于 vLLM Marlin、FlashInfer 和 DeepGEMM 等现有实现，让广泛的场景支持与出色的执行效率兼得。
+
+项目仓库：[github.com/vllm-project/humming](https://github.com/vllm-project/humming)
 
 ## 背景
 
@@ -116,7 +118,7 @@ vllm serve openai/gpt-oss-20b --quantization humming
 用户也可以通过 vLLM 的量化配置接口覆盖默认设置，按部署需求选择激活类型。以下示例将 MoE 层的激活类型指定为 MXFP8：
 
 ```bash
-vllm serve openai/gpt-oss-20b --quantization-config.moe.activation mxfp8
+vllm serve openai/gpt-oss-20b --moe-backend humming --quantization-config.moe.activation mxfp8
 ```
 
 ## 结果
@@ -145,25 +147,29 @@ Humming 对量化类型的支持主要取决于激活类型与权重类型是否
 
 Humming 还支持一种指数位数为 0 的特殊浮点格式，其取值范围等价于相同位宽的对称整数。例如，排除 `-128` 的 INT8 与 `float8e0m7` 都表示 `-127` 到 `127` 的整数。这类权重与激活类型的兼容性等同于相同位宽的 INT 权重。对于符合转换条件的对称整数权重，Humming 会自动将其转换为这种格式，以加快反量化。
 
+在原生硬件计算方面，社区还发现了 Blackwell Tensor Core 的两项隐藏能力：支持 `float4e0m3` 和 `float8e3m4` 这两种未在 PTX 类型系统中公开的特殊浮点格式。Humming 已在所有 Blackwell 架构上支持这些特性，包括数据中心的 SM100/SM103，以及面向工作站与个人计算设备的 SM120/SM121，并将其纳入统一的量化与计算框架，为低精度推理提供更多原生计算选择。Rubin 不支持这两种隐藏的 Tensor Core 格式，因此这些原生计算路径的支持范围不延伸至 Rubin。
+
 ### 性能
+
+以下测试聚焦 GEMM 内核性能，M 覆盖从 1 到 8192 的所有 2 的幂。各内核充分预热后，在冷 L2 缓存下独立计时，采样之间短暂间隔；MoE 以 Gateup 与 Down 两次 GEMM 的合计耗时计算加速比。各图标明对应的比较基准、量化格式、计算维度和软件版本。
 
 #### WnA16
 
-WnA16 将低比特权重与 16-bit 激活相结合，在减少权重存储与访存开销的同时，保留高精度激活计算。以下先展示 W4A16 在 Dense 与 MoE 场景中的表现，再扩展到更多权重位宽。
+WnA16 是当前通用性最强、应用最广泛的量化方法之一。它将低比特权重与 FP16/BF16 激活相结合，既降低权重存储与访存开销，又能复用广泛部署的 16-bit 计算能力，适用于不同代际的 GPU 和丰富的模型部署场景。其中，W4A16 系列尤其受到社区关注，也是 Humming 重点优化的计算路径。
 
-下图比较各 GPU 上 Dense W4A16 GEMM 相对 cuBLAS 的加速比，M 覆盖 1 到 8192 的所有 2 的幂。
+在 Dense W4A16 上，Humming 在多数测试配置中领先或持平于 vLLM Marlin，并在 Hopper 和 Blackwell 的部分负载中取得显著优势。下图以 cuBLAS 为共同基准：小批量时，Humming 在部分设备上达到约 3–4 倍的加速；随着批量增大，它仍能高效利用设备算力，在 H200 的大批量场景下达到约两倍于 Marlin 的性能，在 B300 的部分场景中则超过三倍。
 
 <p align="center">
   <a href="humming-w4a16-performance-en.svg"><img src="humming-w4a16-performance-en.svg" alt="各 GPU 上 W4A16 GEMM 相对 cuBLAS 的加速比" width="1200"></a>
 </p>
 
-下图展示 MoE W4A16 内核相对 vLLM Marlin 的加速比，采用 256 个专家、top_k=8 和 BF16 激活，M 同样覆盖 1 到 8192 的所有 2 的幂。Gateup 与 Down 分别在冷 L2 缓存下测量，再将两项耗时相加计算加速比；图例标明各内核采用的 Indexed 或 Grouped 布局。
+这一优势也延伸到了 MoE。面对专家分散、每个专家计算规模随负载变化的特点，Humming 同时提供高效的 Indexed 和 Grouped 路径。下图中，H20 和 H200 上的 MXFP4 W4A16 在部分中大批量场景达到约两倍于 Marlin 的性能；B300 上的 MXINT4 和 NVFP4 路径在大批量下进一步拉开差距，Grouped 路径最高达到约五倍。SM120 和 SM121 上的结果也表明，Humming 能在多种负载下超越 Marlin 和 FlashInfer 的对应实现。
 
 <p align="center">
   <a href="humming-w4a16-moe-performance-en.svg"><img src="humming-w4a16-moe-performance-en.svg" alt="MoE W4A16 内核的 Gateup 与 Down 合计耗时相对 vLLM Marlin 的加速比" width="1200"></a>
 </p>
 
-Humming 的统一反量化路径也覆盖更多整数与浮点权重格式。下图对比 INT1、INT2、INT3 与 FP4 至 FP8 权重在 SM80、H20、SM103 和 SM120 上的 Dense GEMM 性能，以 BF16 cuBLAS 为基准。测试统一采用 N=K=8192、GS=32、BF16 激活与输出、FP32 累加；浮点权重采用图例标明的零指数位格式。
+Humming 的优化同样覆盖 W4A16 之外的 WnA16 组合。统一的反量化与计算路径，让 INT1、INT2、INT3，以及 FP4 到 FP8 等不同位宽的整数和浮点权重都能获得良好的执行效率。下图中，各类格式在中小批量下展现出广泛的加速收益，SM120 上的低位宽配置最高超过五倍于 BF16 cuBLAS 的性能；在 H20 的大批量场景中，多种位宽则保持接近 BF16 cuBLAS 的计算效率。这让模型能够在精度、存储和吞吐之间进行更细粒度的选择。
 
 <p align="center">
   <a href="humming-wna16-performance-en.svg"><img src="humming-wna16-performance-en.svg" alt="不同位宽权重的 Dense WnA16 GEMM 相对 BF16 cuBLAS 的加速比" width="1200"></a>
@@ -171,21 +177,23 @@ Humming 的统一反量化路径也覆盖更多整数与浮点权重格式。下
 
 #### W8A8 / W4A8 / W4A4
 
-进一步降低激活精度，可以结合低比特权重存储与更高吞吐的计算路径。以下展示 Hopper 与 Blackwell 上的 MoE GEMM 对比：均采用 256 个专家、top_k=8，Gateup 的 N=4096、K=7168，Down 的 N=7168、K=2048。两次 GEMM 分别在完全冷 L2 缓存下测量，再将耗时相加计算加速比；M 覆盖 1 到 8192 的所有 2 的幂。
-
-**Hopper：W8A8 与 W4A8。** 在 H20 和 H200 上，两类计算都以 DeepGEMM Contiguous W8A8 为基准。W8A8 使用分组大小为 128 的 FP8 激活与 128×128 块缩放的 FP8 权重；W4A8 使用分组大小为 32 的 MXFP4 权重，搭配分组或逐 Token 缩放的 FP8 激活。图中同时展示 Humming、hpc-ops 与 FlashInfer 的对应实现。
+从 Hopper 开始，采用块级缩放的 FP8 W8A8 逐渐成为高性能量化推理的主流方案之一。Humming 通过对数据搬运、缩放计算和专家调度的协同优化，在这一成熟的计算路径上进一步提升效率。下图左列展示了 H20 和 H200 上的 W8A8 表现：在中小批量下，Humming 相对 DeepGEMM Contiguous 的性能分别最高达到约 1.8 倍和 1.4 倍，Indexed 与 Grouped 两种布局都具有竞争力。
 
 <p align="center">
   <a href="humming-w8a8-w4a8-hopper-performance-en.svg"><img src="humming-w8a8-w4a8-hopper-performance-en.svg" alt="H20 和 H200 上 MoE W8A8 与 W4A8 相对 DeepGEMM Contiguous W8A8 的加速比" width="1200"></a>
 </p>
 
-**Blackwell SM103：MX 格式的 W8A8、W4A8 与 W4A4。** 下图分别对比 MXFP8 × MXFP8、MXFP4 × MXFP8 和 MXFP4 × MXFP4，权重与激活的分组大小均为 32。每个子图以对应精度的 DeepGEMM Contiguous 为基准，展示 Humming 的 Indexed、Grouped 路径与 FlashInfer 实现的表现。
+随着越来越多模型原生采用 MXFP4 权重量化，如何将更小的权重存储转化为实际推理收益也变得更加重要。Humming 为此设计了高效的 W4A8 路径，在加载 MXFP4 权重的同时完成快速反量化，并利用 FP8 Tensor Core 执行计算，让 Hopper 也能高效运行 W4A8-MXFP4。上图右列仍以 DeepGEMM W8A8 为基准：在中小批量下，Humming 的 W4A8 在 H20 上最高达到约 2.9 倍、在 H200 上约 2.5 倍的性能，也明显快于同图中的 Humming W8A8。更低的权重访存开销由此转化为更低的 GEMM 延迟。
+
+Blackwell 进一步将 MXFP8、MXFP4 等微缩放格式纳入原生 Tensor Core 计算支持。从数据中心的 SM100/SM103，到面向工作站与个人计算设备的 SM120/SM121，Humming 利用各架构对应的低精度计算能力，将 W8A8、W4A8 和 W4A4 纳入同一套内核与调优框架。
+
+在 B300（SM103）上，Humming 的三类 MX 格式计算都展现出明显的性能优势。以下各子图以对应精度的 DeepGEMM Contiguous 为基准，中小批量下的 W8A8、W4A8 和 W4A4 分别最高达到约 1.25 倍、1.6 倍和 1.4 倍的性能，并在多种负载下领先 FlashInfer 的对应实现。Indexed 与 Grouped 路径都能从原生低精度计算中受益，为不同专家布局提供高效选择。
 
 <p align="center">
   <a href="humming-mx-moe-sm103-performance-en.svg"><img src="humming-mx-moe-sm103-performance-en.svg" alt="SM103 上 MoE W8A8、W4A8 与 W4A4 相对 DeepGEMM 的加速比" width="1200"></a>
 </p>
 
-**Blackwell SM120 / SM121：W4A8 与 W4A4。** 下图以 FlashInfer CUTLASS 为基准，对比 Humming 的 Indexed 与 Grouped 路径。W4A8 使用 MXFP4 × MXFP8，分组大小为 32；W4A4 使用 NVFP4 × NVFP4，分组大小为 16。各图中的精度组合均按“权重 × 激活”排列。
+这种性能收益也覆盖 SM120 和 SM121。以下结果中，Humming 的 MXFP4 × MXFP8 W4A8 与 NVFP4 × NVFP4 W4A4 在多数测试点优于 FlashInfer CUTLASS。在 SM121 的小批量场景中，W4A8 的性能提升最高约为 35%，W4A4 约为 20%；SM120 上也在多数计算规模下保持领先。统一架构由此将低精度推理的优化带到更多设备，让数据中心之外的平台也能获得高效的量化计算能力。
 
 <p align="center">
   <a href="humming-w4a8-w4a4-sm12x-performance-en.svg"><img src="humming-w4a8-w4a4-sm12x-performance-en.svg" alt="SM120 和 SM121 上 MoE W4A8 与 W4A4 相对 FlashInfer CUTLASS 的加速比" width="1200"></a>

@@ -1,6 +1,8 @@
 # Announcing Humming: Fast, Flexible Kernels for Quantized Inference
 
-Jointly developed by Ant Group's Venus team and the vLLM community, Humming is a high-performance, JIT-compiled GEMM kernel library for quantized dense and mixture-of-experts (MoE) inference. By combining a unified quantization representation, reusable CUDA components, and extensive tuning for different devices, Humming brings diverse quantization formats and broad hardware support into one framework, making efficient, flexible quantized inference available to more models and devices.
+To make quantized inference efficient for diverse models across a broad range of devices, Ant Group and the vLLM community joined forces to develop Humming, a general-purpose, high-performance kernel library for quantized inference. Its unified architecture brings different devices, quantization formats, and dense and mixture-of-experts (MoE) computations into one framework, covering the vast majority of quantized inference needs on mainstream hardware. In many of the benchmarks presented below, Humming significantly outperforms existing implementations from vLLM Marlin, FlashInfer, and DeepGEMM, combining broad applicability with strong execution performance.
+
+Repository: [github.com/vllm-project/humming](https://github.com/vllm-project/humming)
 
 ## Background
 
@@ -116,7 +118,7 @@ By default, Humming uses the activation type specified in the checkpoint and ada
 Users can override the default through vLLM's quantization configuration interface to select an activation type for their deployment. The following example sets the activation type for MoE layers to MXFP8:
 
 ```bash
-vllm serve openai/gpt-oss-20b --quantization-config.moe.activation mxfp8
+vllm serve openai/gpt-oss-20b --moe-backend humming --quantization-config.moe.activation mxfp8
 ```
 
 ## Results
@@ -145,25 +147,29 @@ The figure below shows the weight and activation type combinations supported by 
 
 Humming also supports a special floating-point format with zero exponent bits, whose representable values match those of symmetric integers at the same bit width. For example, INT8 excluding `-128` and `float8e0m7` both represent integers from `-127` to `127`. Weights in this format have the same activation type compatibility as INT weights of the same bit width. Humming automatically converts eligible symmetric integer weights to this format for faster dequantization.
 
+The community has also uncovered two hidden capabilities in Blackwell Tensor Cores: native support for `float4e0m3` and `float8e3m4`, two special floating-point formats that are not exposed in the PTX type system. Humming supports these features across all Blackwell architectures, including datacenter SM100/SM103 and SM120/SM121 devices for workstations and personal computing. Both formats are integrated into its unified quantization and compute framework, providing more native compute options for low-precision inference. Rubin does not support these two hidden Tensor Core formats, so support for these native compute paths does not extend to Rubin.
+
 ### Performance
+
+The following benchmarks focus on GEMM kernel performance, with M covering every power of two from 1 to 8192. Kernels are fully warmed up and timed independently with a cold L2 cache, with a brief pause between samples. MoE speedups use the sum of Gateup and Down GEMM latencies. Each figure identifies its baseline, quantization formats, matrix dimensions, and software versions.
 
 #### WnA16
 
-WnA16 combines low-bit weights with 16-bit activations, reducing weight storage and memory traffic while retaining high-precision activation computation. We first compare W4A16 kernels for dense and MoE workloads, then extend the comparison to more weight bit widths.
+WnA16 is one of the most versatile and widely used approaches to quantized inference. It combines low-bit weights with FP16/BF16 activations, reducing weight storage and memory traffic while making use of widely available 16-bit compute capabilities. This makes it suitable for many GPU generations and model deployment scenarios. The W4A16 family has attracted particular interest from the community and is a major focus of Humming's optimization work.
 
-The following figure compares Dense W4A16 GEMM speedups over cuBLAS across GPUs, with M covering every power of two from 1 to 8192.
+For dense W4A16, Humming matches or outperforms vLLM Marlin in most tested configurations, with substantial gains on several Hopper and Blackwell workloads. The figure below uses cuBLAS as a common baseline. At small batch sizes, Humming delivers roughly 3–4× speedups on several devices. As batch size grows, it continues to use the hardware efficiently, reaching approximately twice Marlin's performance on large-batch H200 workloads and more than three times its performance in some B300 cases.
 
 <p align="center">
   <a href="humming-w4a16-performance-en.svg"><img src="humming-w4a16-performance-en.svg" alt="W4A16 GEMM speedups over cuBLAS across GPUs" width="1200"></a>
 </p>
 
-The following figure compares MoE W4A16 kernels against vLLM Marlin, using 256 experts, top_k=8, and BF16 activations, with M again covering every power of two from 1 to 8192. Gateup and Down are measured independently with a cold L2 cache, and their latencies are summed to calculate speedup. The legend identifies each kernel's Indexed or Grouped layout.
+These gains extend to MoE. Humming provides efficient Indexed and Grouped paths for workloads where tokens are distributed across experts and the amount of work per expert changes with the load. In the figure below, MXFP4 W4A16 on H20 and H200 reaches roughly twice Marlin's performance in several medium-to-large batch cases. On B300, the MXINT4 and NVFP4 paths achieve even larger gains at large batch sizes, with the Grouped path reaching approximately 5×. Results on SM120 and SM121 also show Humming outperforming Marlin and the corresponding FlashInfer implementations across a range of workloads.
 
 <p align="center">
   <a href="humming-w4a16-moe-performance-en.svg"><img src="humming-w4a16-moe-performance-en.svg" alt="MoE W4A16 kernel speedups over vLLM Marlin using summed Gateup and Down latencies" width="1200"></a>
 </p>
 
-Humming's unified dequantization paths also support a wider range of integer and floating-point weight formats. The following figure compares dense GEMM with INT1, INT2, INT3, and FP4 through FP8 weights on SM80, H20, SM103, and SM120, using BF16 cuBLAS as the baseline. All cases use N=K=8192, GS=32, BF16 activations and outputs, and FP32 accumulation. Floating-point weights use the zero-exponent-bit formats identified in the legend.
+Humming's optimizations also extend beyond W4A16 to other WnA16 combinations. Its shared dequantization and compute paths deliver strong performance for integer and floating-point weights at different bit widths, including INT1, INT2, INT3, and FP4 through FP8. The following figure shows broad gains across these formats at small and medium batch sizes, with the lowest-bit configurations on SM120 exceeding 5× the performance of BF16 cuBLAS. At large batch sizes on H20, multiple bit widths maintain compute efficiency close to BF16 cuBLAS. This gives models finer-grained choices among precision, storage, and throughput.
 
 <p align="center">
   <a href="humming-wna16-performance-en.svg"><img src="humming-wna16-performance-en.svg" alt="Dense WnA16 GEMM speedups over BF16 cuBLAS across weight bit widths" width="1200"></a>
@@ -171,21 +177,23 @@ Humming's unified dequantization paths also support a wider range of integer and
 
 #### W8A8 / W4A8 / W4A4
 
-Lower activation precision can combine compact weight storage with higher-throughput compute paths. The following MoE GEMM comparisons cover Hopper and Blackwell, using 256 experts, top_k=8, Gateup dimensions N=4096 and K=7168, and Down dimensions N=7168 and K=2048. Each GEMM is measured independently with a fully cold L2 cache, then the two latencies are summed to calculate speedup. M covers every power of two from 1 to 8192.
-
-**Hopper: W8A8 and W4A8.** On H20 and H200, both comparisons use DeepGEMM Contiguous W8A8 as the baseline. W8A8 uses FP8 activations with group size 128 and FP8 weights with 128×128 block scaling. W4A8 uses MXFP4 weights with group size 32, paired with groupwise or tokenwise FP8 activations. The figure compares the corresponding Humming, hpc-ops, and FlashInfer implementations.
+With Hopper, FP8 W8A8 with blockwise scaling became a mainstream approach to high-performance quantized inference. Humming further improves this established compute path by optimizing data movement, scaling, and expert scheduling together. The left column below shows W8A8 results on H20 and H200. At small and medium batch sizes, Humming reaches approximately 1.8× and 1.4× the performance of DeepGEMM Contiguous, respectively, with competitive performance from both Indexed and Grouped layouts.
 
 <p align="center">
   <a href="humming-w8a8-w4a8-hopper-performance-en.svg"><img src="humming-w8a8-w4a8-hopper-performance-en.svg" alt="MoE W8A8 and W4A8 speedups over DeepGEMM Contiguous W8A8 on H20 and H200" width="1200"></a>
 </p>
 
-**Blackwell SM103: W8A8, W4A8, and W4A4 with MX formats.** The following figure compares MXFP8 × MXFP8, MXFP4 × MXFP8, and MXFP4 × MXFP4, all with group size 32 for both weights and activations. Each panel uses DeepGEMM Contiguous at the corresponding precision as its baseline, comparing Humming's Indexed and Grouped paths with FlashInfer implementations.
+As more models adopt native MXFP4 weight quantization, converting the smaller weight footprint into practical inference gains becomes increasingly valuable. Humming addresses this with an efficient W4A8 path that rapidly dequantizes MXFP4 weights as they are loaded and uses FP8 Tensor Cores for computation, enabling efficient W4A8-MXFP4 execution on Hopper. The right column above keeps DeepGEMM W8A8 as the baseline. At small and medium batch sizes, Humming's W4A8 reaches approximately 2.9× baseline performance on H20 and 2.5× on H200, also substantially outperforming Humming's W8A8 results in the same figure. Reduced weight traffic translates into lower GEMM latency.
+
+Blackwell adds native Tensor Core support for microscaling formats such as MXFP8 and MXFP4. From datacenter SM100/SM103 devices to SM120/SM121 devices for workstations and personal computing, Humming uses each architecture's low-precision compute capabilities to support W8A8, W4A8, and W4A4 within one kernel and tuning framework.
+
+On B300 (SM103), Humming demonstrates substantial performance gains across all three MX format combinations. Each panel below uses DeepGEMM Contiguous at the corresponding precision as its baseline. At small and medium batch sizes, W8A8, W4A8, and W4A4 reach approximately 1.25×, 1.6×, and 1.4× baseline performance, respectively, and outperform the corresponding FlashInfer implementations across many workloads. Both Indexed and Grouped paths benefit from native low-precision computation, providing efficient options for different expert layouts.
 
 <p align="center">
   <a href="humming-mx-moe-sm103-performance-en.svg"><img src="humming-mx-moe-sm103-performance-en.svg" alt="MoE W8A8, W4A8, and W4A4 speedups over DeepGEMM on SM103" width="1200"></a>
 </p>
 
-**Blackwell SM120 / SM121: W4A8 and W4A4.** The following figure compares Humming's Indexed and Grouped paths against FlashInfer CUTLASS. W4A8 uses MXFP4 × MXFP8 with group size 32; W4A4 uses NVFP4 × NVFP4 with group size 16. Precision pairs throughout these figures are listed as weight × activation.
+These gains also extend to SM120 and SM121. In the results below, Humming's MXFP4 × MXFP8 W4A8 and NVFP4 × NVFP4 W4A4 outperform FlashInfer CUTLASS at most tested points. On SM121 at small batch sizes, performance gains reach approximately 35% for W4A8 and 20% for W4A4; on SM120, Humming also leads across most tested sizes. The unified architecture brings these low-precision inference optimizations to more devices, extending efficient quantized computation beyond the datacenter.
 
 <p align="center">
   <a href="humming-w4a8-w4a4-sm12x-performance-en.svg"><img src="humming-w4a8-w4a4-sm12x-performance-en.svg" alt="MoE W4A8 and W4A4 speedups over FlashInfer CUTLASS on SM120 and SM121" width="1200"></a>
