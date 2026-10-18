@@ -93,6 +93,8 @@ pip install "humming-kernels[cu12]"  # CUDA 12
 pip install "humming-kernels[cu13]"  # CUDA 13
 ```
 
+Humming 本身极其轻量，依赖简单，wheel 安装包仅约 500 KB。得益于按需编译的设计，安装时无需携带庞大的预编译内核。理论上，能够运行 PyTorch 2.7 的环境都可以使用 Humming，方便接入已有的推理环境。
+
 ### 在 vLLM 中使用
 
 Humming 已与 vLLM 深度集成。用户可以通过 `--linear-backend` 和 `--moe-backend`，分别选择 Humming 作为 Dense GEMM 和 MoE GEMM 的计算后端。例如，同时为两类计算启用 Humming：
@@ -145,6 +147,10 @@ Humming 还支持一种指数位数为 0 的特殊浮点格式，其取值范围
 
 ### 性能
 
+#### WnA16
+
+WnA16 将低比特权重与 16-bit 激活相结合，在减少权重存储与访存开销的同时，保留高精度激活计算。以下先展示 W4A16 在 Dense 与 MoE 场景中的表现，再扩展到更多权重位宽。
+
 下图比较各 GPU 上 Dense W4A16 GEMM 相对 cuBLAS 的加速比，M 覆盖 1 到 8192 的所有 2 的幂。
 
 <p align="center">
@@ -157,7 +163,33 @@ Humming 还支持一种指数位数为 0 的特殊浮点格式，其取值范围
   <a href="humming-w4a16-moe-performance-en.svg"><img src="humming-w4a16-moe-performance-en.svg" alt="MoE W4A16 内核的 Gateup 与 Down 合计耗时相对 vLLM Marlin 的加速比" width="1200"></a>
 </p>
 
-TODO: W4A8 / W8A8 / W4A4
+Humming 的统一反量化路径也覆盖更多整数与浮点权重格式。下图对比 INT1、INT2、INT3 与 FP4 至 FP8 权重在 SM80、H20、SM103 和 SM120 上的 Dense GEMM 性能，以 BF16 cuBLAS 为基准。测试统一采用 N=K=8192、GS=32、BF16 激活与输出、FP32 累加；浮点权重采用图例标明的零指数位格式。
+
+<p align="center">
+  <a href="humming-wna16-performance-en.svg"><img src="humming-wna16-performance-en.svg" alt="不同位宽权重的 Dense WnA16 GEMM 相对 BF16 cuBLAS 的加速比" width="1200"></a>
+</p>
+
+#### W8A8 / W4A8 / W4A4
+
+进一步降低激活精度，可以结合低比特权重存储与更高吞吐的计算路径。以下展示 Hopper 与 Blackwell 上的 MoE GEMM 对比：均采用 256 个专家、top_k=8，Gateup 的 N=4096、K=7168，Down 的 N=7168、K=2048。两次 GEMM 分别在完全冷 L2 缓存下测量，再将耗时相加计算加速比；M 覆盖 1 到 8192 的所有 2 的幂。
+
+**Hopper：W8A8 与 W4A8。** 在 H20 和 H200 上，两类计算都以 DeepGEMM Contiguous W8A8 为基准。W8A8 使用分组大小为 128 的 FP8 激活与 128×128 块缩放的 FP8 权重；W4A8 使用分组大小为 32 的 MXFP4 权重，搭配分组或逐 Token 缩放的 FP8 激活。图中同时展示 Humming、hpc-ops 与 FlashInfer 的对应实现。
+
+<p align="center">
+  <a href="humming-w8a8-w4a8-hopper-performance-en.svg"><img src="humming-w8a8-w4a8-hopper-performance-en.svg" alt="H20 和 H200 上 MoE W8A8 与 W4A8 相对 DeepGEMM Contiguous W8A8 的加速比" width="1200"></a>
+</p>
+
+**Blackwell SM103：MX 格式的 W8A8、W4A8 与 W4A4。** 下图分别对比 MXFP8 × MXFP8、MXFP4 × MXFP8 和 MXFP4 × MXFP4，权重与激活的分组大小均为 32。每个子图以对应精度的 DeepGEMM Contiguous 为基准，展示 Humming 的 Indexed、Grouped 路径与 FlashInfer 实现的表现。
+
+<p align="center">
+  <a href="humming-mx-moe-sm103-performance-en.svg"><img src="humming-mx-moe-sm103-performance-en.svg" alt="SM103 上 MoE W8A8、W4A8 与 W4A4 相对 DeepGEMM 的加速比" width="1200"></a>
+</p>
+
+**Blackwell SM120 / SM121：W4A8 与 W4A4。** 下图以 FlashInfer CUTLASS 为基准，对比 Humming 的 Indexed 与 Grouped 路径。W4A8 使用 MXFP4 × MXFP8，分组大小为 32；W4A4 使用 NVFP4 × NVFP4，分组大小为 16。各图中的精度组合均按“权重 × 激活”排列。
+
+<p align="center">
+  <a href="humming-w4a8-w4a4-sm12x-performance-en.svg"><img src="humming-w4a8-w4a4-sm12x-performance-en.svg" alt="SM120 和 SM121 上 MoE W4A8 与 W4A4 相对 FlashInfer CUTLASS 的加速比" width="1200"></a>
+</p>
 
 ## 未来计划
 
@@ -166,7 +198,7 @@ TODO: W4A8 / W8A8 / W4A4
 Humming 将继续扩展统一架构的硬件覆盖，并深入适配新设备的计算与访存能力，让更多平台充分释放量化推理的性能潜力。接下来的重点包括：
 
 - 支持 Rubin 架构的更多新特性，包括 Locality Domains，进一步优化任务映射与数据访问。
-- 扩展对更多平头哥 PPU 设备的支持，包括 ZW890P。
+- 扩展对更多平头哥 PPU 设备的支持，包括 Zhenwu M890。
 - 支持更多兼容 CUDA 编程的设备，将已有的量化格式、内核组件与调优能力带到更多硬件平台。
 
 ### 添加 Autotune
