@@ -138,13 +138,13 @@ Humming's optimizations also extend beyond W4A16 to other WnA16 combinations. It
 
 #### W8A8 / W4A8 / W4A4
 
-With Hopper, FP8 W8A8 with blockwise scaling became a mainstream approach to high-performance quantized inference. Humming further improves this established compute path by optimizing data movement, scaling, and expert scheduling together. The left column below shows W8A8 results on H20 and H200. At small and medium batch sizes, Humming reaches approximately 1.8× and 1.4× the performance of DeepGEMM Contiguous, respectively, with competitive performance from both Indexed and Grouped layouts.
+With Hopper, FP8 W8A8 with blockwise scaling became a mainstream approach to high-performance quantized inference. Humming further improves this established compute path by optimizing data movement, scaling, and expert scheduling together. The left column below shows W8A8 results on H20 and H200. At small and medium batch sizes, Humming reaches approximately 2.6× and 2.5× the performance of DeepGEMM Contiguous, respectively, with competitive performance from both Indexed and Grouped layouts.
 
 <p align="center">
   <a href="humming-w8a8-w4a8-hopper-performance-en.svg"><img src="humming-w8a8-w4a8-hopper-performance-en.svg" alt="MoE W8A8 and W4A8 speedups over DeepGEMM Contiguous W8A8 on H20 and H200" width="1200"></a>
 </p>
 
-As more models adopt native MXFP4 weight quantization, converting the smaller weight footprint into practical inference gains becomes increasingly valuable. Humming addresses this with an efficient W4A8 path that rapidly dequantizes MXFP4 weights as they are loaded and uses FP8 Tensor Cores for computation, enabling efficient W4A8-MXFP4 execution on Hopper. The right column above keeps DeepGEMM W8A8 as the baseline. At small and medium batch sizes, Humming's W4A8 reaches approximately 2.9× baseline performance on H20 and 2.5× on H200, also substantially outperforming Humming's W8A8 results in the same figure. Reduced weight traffic translates into lower GEMM latency.
+As more models adopt native MXFP4 weight quantization, converting the smaller weight footprint into practical inference gains becomes increasingly valuable. Humming addresses this with an efficient W4A8 path that rapidly dequantizes MXFP4 weights as they are loaded and uses FP8 Tensor Cores for computation, enabling efficient W4A8-MXFP4 execution on Hopper. The right column above keeps DeepGEMM W8A8 as the baseline. At small and medium batch sizes, Humming's W4A8 reaches approximately 4.2× baseline performance on H20 and 4.5× on H200, also substantially outperforming Humming's W8A8 results in the same figure. Reduced weight traffic translates into lower GEMM latency.
 
 Blackwell adds native Tensor Core support for microscaling formats such as MXFP8 and MXFP4. From datacenter SM100/SM103 devices to SM120/SM121 devices for workstations and personal computing, Humming uses each architecture's low-precision compute capabilities to support W8A8, W4A8, and W4A4 within one kernel and tuning framework.
 
@@ -154,7 +154,7 @@ On B300 (SM103), Humming demonstrates substantial performance gains across all t
   <a href="humming-mx-moe-sm103-performance-en.svg"><img src="humming-mx-moe-sm103-performance-en.svg" alt="MoE W8A8, W4A8, and W4A4 speedups over DeepGEMM on SM103" width="1200"></a>
 </p>
 
-These gains also extend to SM120 and SM121. In the results below, Humming's MXFP4 × MXFP8 W4A8 and NVFP4 × NVFP4 W4A4 outperform FlashInfer CUTLASS at most tested points. On SM121 at small batch sizes, performance gains reach approximately 35% for W4A8 and 20% for W4A4; on SM120, Humming also leads across most tested sizes. The unified architecture brings these low-precision inference optimizations to more devices, extending efficient quantized computation beyond the datacenter.
+These gains also extend to SM120 and SM121. In the results below, Humming's MXFP4 × MXFP8 W4A8 and NVFP4 × NVFP4 W4A4 outperform FlashInfer CUTLASS at most tested points. On SM121 at small batch sizes, performance gains reach approximately 19% for W4A8 and 9% for W4A4; on SM120, Humming also leads across most tested sizes. The unified architecture brings these low-precision inference optimizations to more devices, extending efficient quantized computation beyond the datacenter.
 
 <p align="center">
   <a href="humming-w4a8-w4a4-sm12x-performance-en.svg"><img src="humming-w4a8-w4a4-sm12x-performance-en.svg" alt="MoE W4A8 and W4A4 speedups over FlashInfer CUTLASS on SM120 and SM121" width="1200"></a>
@@ -221,4 +221,4 @@ Humming therefore plans to introduce autotune, benchmarking candidate configurat
 
 ### Deeper Integration with Inference Frameworks
 
-Humming will further deepen its integration with inference frameworks such as vLLM, extending quantized All-to-All (A2A) communication for expert parallelism (EP) to every supported quantization method to reduce communication overhead when routing tokens across GPUs. We will also continue improving quantized model loading, backend selection, and device adaptation, helping translate kernel performance gains into end-to-end benefits in real deployments.
+Humming will continue deepening its integration with inference frameworks such as vLLM, expanding support across quantized model loading, backend selection, parallel inference, runtime scheduling, and device adaptation. We aim to make more quantization methods work with the full range of framework capabilities, including optimizations such as quantized All-to-All (A2A) communication for expert parallelism (EP). These efforts will make high-performance quantized kernels easier to use across diverse deployment scenarios and help translate kernel performance gains into end-to-end inference benefits.

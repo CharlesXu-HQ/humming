@@ -138,13 +138,13 @@ Humming 的优化同样覆盖 W4A16 之外的 WnA16 组合。统一的反量化�
 
 #### W8A8 / W4A8 / W4A4
 
-从 Hopper 开始，采用块级缩放的 FP8 W8A8 逐渐成为高性能量化推理的主流方案之一。Humming 通过对数据搬运、缩放计算和专家调度的协同优化，在这一成熟的计算路径上进一步提升效率。下图左列展示了 H20 和 H200 上的 W8A8 表现：在中小批量下，Humming 相对 DeepGEMM Contiguous 的性能分别最高达到约 1.8 倍和 1.4 倍，Indexed 与 Grouped 两种布局都具有竞争力。
+从 Hopper 开始，采用块级缩放的 FP8 W8A8 逐渐成为高性能量化推理的主流方案之一。Humming 通过对数据搬运、缩放计算和专家调度的协同优化，在这一成熟的计算路径上进一步提升效率。下图左列展示了 H20 和 H200 上的 W8A8 表现：在中小批量下，Humming 相对 DeepGEMM Contiguous 的性能分别最高达到约 2.6 倍和 2.5 倍，Indexed 与 Grouped 两种布局都具有竞争力。
 
 <p align="center">
   <a href="humming-w8a8-w4a8-hopper-performance-en.svg"><img src="humming-w8a8-w4a8-hopper-performance-en.svg" alt="H20 和 H200 上 MoE W8A8 与 W4A8 相对 DeepGEMM Contiguous W8A8 的加速比" width="1200"></a>
 </p>
 
-随着越来越多模型原生采用 MXFP4 权重量化，如何将更小的权重存储转化为实际推理收益也变得更加重要。Humming 为此设计了高效的 W4A8 路径，在加载 MXFP4 权重的同时完成快速反量化，并利用 FP8 Tensor Core 执行计算，让 Hopper 也能高效运行 W4A8-MXFP4。上图右列仍以 DeepGEMM W8A8 为基准：在中小批量下，Humming 的 W4A8 在 H20 上最高达到约 2.9 倍、在 H200 上约 2.5 倍的性能，也明显快于同图中的 Humming W8A8。更低的权重访存开销由此转化为更低的 GEMM 延迟。
+随着越来越多模型原生采用 MXFP4 权重量化，如何将更小的权重存储转化为实际推理收益也变得更加重要。Humming 为此设计了高效的 W4A8 路径，在加载 MXFP4 权重的同时完成快速反量化，并利用 FP8 Tensor Core 执行计算，让 Hopper 也能高效运行 W4A8-MXFP4。上图右列仍以 DeepGEMM W8A8 为基准：在中小批量下，Humming 的 W4A8 在 H20 上最高达到约 4.2 倍、在 H200 上约 4.5 倍的性能，也明显快于同图中的 Humming W8A8。更低的权重访存开销由此转化为更低的 GEMM 延迟。
 
 Blackwell 进一步将 MXFP8、MXFP4 等微缩放格式纳入原生 Tensor Core 计算支持。从数据中心的 SM100/SM103，到面向工作站与个人计算设备的 SM120/SM121，Humming 利用各架构对应的低精度计算能力，将 W8A8、W4A8 和 W4A4 纳入同一套内核与调优框架。
 
@@ -154,7 +154,7 @@ Blackwell 进一步将 MXFP8、MXFP4 等微缩放格式纳入原生 Tensor Core 
   <a href="humming-mx-moe-sm103-performance-en.svg"><img src="humming-mx-moe-sm103-performance-en.svg" alt="SM103 上 MoE W8A8、W4A8 与 W4A4 相对 DeepGEMM 的加速比" width="1200"></a>
 </p>
 
-这种性能收益也覆盖 SM120 和 SM121。以下结果中，Humming 的 MXFP4 × MXFP8 W4A8 与 NVFP4 × NVFP4 W4A4 在多数测试点优于 FlashInfer CUTLASS。在 SM121 的小批量场景中，W4A8 的性能提升最高约为 35%，W4A4 约为 20%；SM120 上也在多数计算规模下保持领先。统一架构由此将低精度推理的优化带到更多设备，让数据中心之外的平台也能获得高效的量化计算能力。
+这种性能收益也覆盖 SM120 和 SM121。以下结果中，Humming 的 MXFP4 × MXFP8 W4A8 与 NVFP4 × NVFP4 W4A4 在多数测试点优于 FlashInfer CUTLASS。在 SM121 的小批量场景中，W4A8 的性能提升最高约为 19%，W4A4 约为 9%；SM120 上也在多数计算规模下保持领先。统一架构由此将低精度推理的优化带到更多设备，让数据中心之外的平台也能获得高效的量化计算能力。
 
 <p align="center">
   <a href="humming-w4a8-w4a4-sm12x-performance-en.svg"><img src="humming-w4a8-w4a4-sm12x-performance-en.svg" alt="SM120 和 SM121 上 MoE W4A8 与 W4A4 相对 FlashInfer CUTLASS 的加速比" width="1200"></a>
@@ -221,4 +221,4 @@ Humming 将继续扩展统一架构的硬件覆盖，并深入适配新设备的
 
 ### 深化与推理框架的集成
 
-Humming 将继续深化与 vLLM 等推理框架的集成，为所有受支持的量化方法接入专家并行（EP）中的量化 All-to-All（A2A）通信，降低专家路由过程中的跨卡通信开销。我们也将持续完善量化模型加载、后端选择与设备适配，让内核层面的性能优势更充分地转化为实际部署中的端到端收益。
+Humming 将持续深化与 vLLM 等推理框架的集成，围绕量化模型加载、后端选择、并行推理、运行时调度与设备适配等环节完善支持。我们希望让更多量化方法与框架中的各类能力协同工作，包括专家并行（EP）中的量化 All-to-All（A2A）通信等优化，让高性能量化内核更方便地应用于不同部署场景，并将内核层面的性能优势转化为端到端推理收益。
