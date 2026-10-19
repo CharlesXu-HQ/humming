@@ -1,6 +1,10 @@
 # Announcing Humming: Fast, Flexible Kernels for Quantized Inference
 
-To make quantized inference efficient for diverse models across a broad range of devices, Ant Group and the vLLM community joined forces to develop Humming, a general-purpose, high-performance kernel library for quantized inference. Its unified architecture brings different devices, quantization formats, and dense and mixture-of-experts (MoE) computations into one framework, covering the vast majority of quantized inference needs on mainstream hardware. In many of the benchmarks presented below, Humming significantly outperforms existing implementations from vLLM Marlin, FlashInfer, and DeepGEMM, combining broad applicability with strong execution performance.
+Ant Group and the vLLM community are open-sourcing Humming, a general-purpose, high-performance kernel library for quantized inference.
+
+- **Broad device support**: Supports NVIDIA GPU architectures from Turing onward, along with CUDA-compatible devices such as T-Head's Zhenwu 810E.
+- **Extensive quantization support**: A unified architecture supports WnA16, W8A8, W4A8, and W4A4 for dense and MoE workloads, with a wide range of integer and floating-point formats.
+- **Strong execution performance**: Significantly outperforms existing implementations from vLLM Marlin, FlashInfer, and DeepGEMM across many representative workloads.
 
 Repository: [github.com/vllm-project/humming](https://github.com/vllm-project/humming)
 
@@ -77,49 +81,6 @@ Humming deeply optimizes kernels using both the GEMM configuration and device pa
 **Dequantization paths matched to each device.** The same quantization format can benefit from different implementations across GPUs. Humming selects decoding, numeric conversion, and scaling paths for the device, pairing them with suitable memory access and compute pipelines to reduce instruction and data movement overhead. Shared components make these optimizations reusable across compatible dense and MoE kernels.
 
 **Extensive tuning controls with device-specific heuristics.** Humming exposes tile shapes, pipeline stage counts, warp specialization, TMA, MMA instructions, CTA concurrency, and Stream-K scheduling. Device-specific heuristics combine GEMM shapes with resource constraints to balance parallelism, data reuse, and pipeline overhead, selecting different execution strategies as input sizes change. Developers can use the default configurations directly or refine them for particular models and deployment scenarios.
-
-## Usage
-
-### Installation
-
-Install Humming with pip:
-
-```bash
-pip install humming-kernels
-```
-
-Humming uses a CUDA compiler to generate kernels on demand. If no CUDA compiler is available on the system, choose one of the following installation options to include the compilation dependencies for your environment's CUDA major version:
-
-```bash
-pip install "humming-kernels[cu12]"  # CUDA 12
-pip install "humming-kernels[cu13]"  # CUDA 13
-```
-
-Humming itself is extremely lightweight, with simple dependencies and a wheel package of only about 500 KB. On-demand compilation avoids bundling a large collection of precompiled kernels. In principle, any environment capable of running PyTorch 2.7 can also run Humming, making it easy to integrate into existing inference environments.
-
-### Using Humming in vLLM
-
-Humming is deeply integrated into vLLM. The `--linear-backend` and `--moe-backend` options select Humming as the compute backend for dense GEMM and MoE GEMM, respectively. For example, enable Humming for both:
-
-```bash
-vllm serve openai/gpt-oss-20b --linear-backend humming --moe-backend humming
-```
-
-For quantized checkpoints that vLLM does not yet parse natively but Humming supports, users can also try `--quantization humming` to explicitly select Humming's quantization loading path:
-
-```bash
-vllm serve openai/gpt-oss-20b --quantization humming
-```
-
-### Selecting Activation Types
-
-By default, Humming uses the activation type specified in the checkpoint and adapts execution to the device. If the GPU does not support that compute type, Humming falls back to a supported higher-precision type. For example, devices without native MXFP4 support can automatically use FP8, BF16, or FP16 compute paths, allowing the same quantized checkpoint to run across GPU generations.
-
-Users can override the default through vLLM's quantization configuration interface to select an activation type for their deployment. The following example sets the activation type for MoE layers to MXFP8:
-
-```bash
-vllm serve openai/gpt-oss-20b --moe-backend humming --quantization-config.moe.activation mxfp8
-```
 
 ## Results
 
@@ -199,6 +160,49 @@ These gains also extend to SM120 and SM121. In the results below, Humming's MXFP
   <a href="humming-w4a8-w4a4-sm12x-performance-en.svg"><img src="humming-w4a8-w4a4-sm12x-performance-en.svg" alt="MoE W4A8 and W4A4 speedups over FlashInfer CUTLASS on SM120 and SM121" width="1200"></a>
 </p>
 
+## Usage
+
+### Installation
+
+Install Humming with pip:
+
+```bash
+pip install humming-kernels
+```
+
+Humming uses a CUDA compiler to generate kernels on demand. If no CUDA compiler is available on the system, choose one of the following installation options to include the compilation dependencies for your environment's CUDA major version:
+
+```bash
+pip install "humming-kernels[cu12]"  # CUDA 12
+pip install "humming-kernels[cu13]"  # CUDA 13
+```
+
+Humming itself is extremely lightweight, with simple dependencies and a wheel package of only about 500 KB. On-demand compilation avoids bundling a large collection of precompiled kernels. In principle, any environment capable of running PyTorch 2.7 can also run Humming, making it easy to integrate into existing inference environments.
+
+### Using Humming in vLLM
+
+Humming is deeply integrated into vLLM. The `--linear-backend` and `--moe-backend` options select Humming as the compute backend for dense GEMM and MoE GEMM, respectively. For example, enable Humming for both:
+
+```bash
+vllm serve openai/gpt-oss-20b --linear-backend humming --moe-backend humming
+```
+
+For quantized checkpoints that vLLM does not yet parse natively but Humming supports, users can also try `--quantization humming` to explicitly select Humming's quantization loading path:
+
+```bash
+vllm serve openai/gpt-oss-20b --quantization humming
+```
+
+### Selecting Activation Types
+
+By default, Humming uses the activation type specified in the checkpoint and adapts execution to the device. If the GPU does not support that compute type, Humming falls back to a supported higher-precision type. For example, devices without native MXFP4 support can automatically use FP8, BF16, or FP16 compute paths, allowing the same quantized checkpoint to run across GPU generations.
+
+Users can override the default through vLLM's quantization configuration interface to select an activation type for their deployment. The following example sets the activation type for MoE layers to MXFP8:
+
+```bash
+vllm serve openai/gpt-oss-20b --moe-backend humming --quantization-config.moe.activation mxfp8
+```
+
 ## Future Plans
 
 ### Broader and Deeper Device Support
@@ -214,3 +218,7 @@ Humming will continue expanding hardware coverage while adapting to the compute 
 With targeted tuning, Humming can already achieve state-of-the-art performance in most scenarios. However, the wide range of model shapes, quantization configurations, and device resources makes it difficult for heuristics to select the optimal configuration in every case.
 
 Humming therefore plans to introduce autotune, benchmarking candidate configurations on the target device to find better execution parameters for each workload. Autotune will complement existing heuristics, reducing manual configuration search and helping more workloads approach the kernels' best achievable performance.
+
+### Deeper Integration with Inference Frameworks
+
+Humming will further deepen its integration with inference frameworks such as vLLM, extending quantized All-to-All (A2A) communication for expert parallelism (EP) to every supported quantization method to reduce communication overhead when routing tokens across GPUs. We will also continue improving quantized model loading, backend selection, and device adaptation, helping translate kernel performance gains into end-to-end benefits in real deployments.

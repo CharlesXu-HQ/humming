@@ -1,6 +1,10 @@
 # Humming：高性能、灵活的量化推理内核
 
-为了让不同模型在广泛的设备上都能高效运行量化推理，蚂蚁集团与 vLLM 社区 合作开发了 Humming，一个通用、高性能的量化推理算子库。依托统一架构，Humming 将不同设备、量化格式以及 Dense 和 MoE 计算纳入同一套框架，覆盖主流设备上的绝大多数量化推理需求。在本文展示的多项基准测试中，Humming 的性能显著优于 vLLM Marlin、FlashInfer 和 DeepGEMM 等现有实现，让广泛的场景支持与出色的执行效率兼得。
+蚂蚁集团与 vLLM 社区联合开源 Humming，一个通用、高性能的量化推理算子库。
+
+- **广泛的设备支持**：覆盖从 Turing 起的 NVIDIA 各代 GPU，以及平头哥 Zhenwu 810E 等兼容 CUDA 编程的设备。
+- **丰富的量化支持**：通过统一架构支持 Dense 和 MoE 场景中的 WnA16、W8A8、W4A8 和 W4A4，兼容多种整数与浮点格式。
+- **出色的执行性能**：在多种典型负载中显著优于 vLLM Marlin、FlashInfer 和 DeepGEMM 等现有实现。
 
 项目仓库：[github.com/vllm-project/humming](https://github.com/vllm-project/humming)
 
@@ -77,49 +81,6 @@ Humming 结合 GEMM 配置与设备参数，对内核进行深度优化。从量
 **为不同设备选择合适的反量化路径。** 相同的量化格式，在不同 GPU 上也可能需要不同的实现。Humming 根据设备能力选择解码、数值转换与缩放路径，并与对应的访存方式和计算流水线配合，减少反量化过程中的指令与数据搬运开销。共享组件使这些优化能够复用于适用的 Dense 与 MoE 内核。
 
 **用丰富参数与设备专属启发式适配不同负载。** Humming 开放分块形状、流水线级数、Warp 分工、TMA、MMA 指令、CTA 并发度及 Stream-K 调度等调优参数。针对不同设备，启发式逻辑结合 GEMM 形状与资源约束，在并行度、数据复用和流水线开销之间选择合适的配置，并随输入规模切换执行策略。开发者既可以直接使用默认配置，也可以针对特定模型和部署场景进一步调优。
-
-## 使用方法
-
-### 安装
-
-通过 pip 安装 Humming：
-
-```bash
-pip install humming-kernels
-```
-
-Humming 使用 CUDA 编译器按需生成内核。如果系统中没有可用的 CUDA 编译器，可以根据环境的 CUDA 主版本，选择以下一种方式一并安装编译依赖：
-
-```bash
-pip install "humming-kernels[cu12]"  # CUDA 12
-pip install "humming-kernels[cu13]"  # CUDA 13
-```
-
-Humming 本身极其轻量，依赖简单，wheel 安装包仅约 500 KB。得益于按需编译的设计，安装时无需携带庞大的预编译内核。理论上，能够运行 PyTorch 2.7 的环境都可以使用 Humming，方便接入已有的推理环境。
-
-### 在 vLLM 中使用
-
-Humming 已与 vLLM 深度集成。用户可以通过 `--linear-backend` 和 `--moe-backend`，分别选择 Humming 作为 Dense GEMM 和 MoE GEMM 的计算后端。例如，同时为两类计算启用 Humming：
-
-```bash
-vllm serve openai/gpt-oss-20b --linear-backend humming --moe-backend humming
-```
-
-对于 vLLM 尚未原生支持解析、但 Humming 支持的量化 checkpoint，也可以尝试通过 `--quantization humming` 显式选择 Humming 的量化加载路径：
-
-```bash
-vllm serve openai/gpt-oss-20b --quantization humming
-```
-
-### 选择激活类型
-
-默认情况下，Humming 沿用 checkpoint 中设定的激活类型，并根据设备能力自动适配。如果 GPU 不支持对应的计算类型，Humming 会回退到设备支持的更高精度类型。例如，在不支持原生 MXFP4 计算的设备上，可以自动选择 FP8、BF16 或 FP16 计算路径，让同一份量化 checkpoint 适配不同代际的 GPU。
-
-用户也可以通过 vLLM 的量化配置接口覆盖默认设置，按部署需求选择激活类型。以下示例将 MoE 层的激活类型指定为 MXFP8：
-
-```bash
-vllm serve openai/gpt-oss-20b --moe-backend humming --quantization-config.moe.activation mxfp8
-```
 
 ## 结果
 
@@ -199,6 +160,49 @@ Blackwell 进一步将 MXFP8、MXFP4 等微缩放格式纳入原生 Tensor Core 
   <a href="humming-w4a8-w4a4-sm12x-performance-en.svg"><img src="humming-w4a8-w4a4-sm12x-performance-en.svg" alt="SM120 和 SM121 上 MoE W4A8 与 W4A4 相对 FlashInfer CUTLASS 的加速比" width="1200"></a>
 </p>
 
+## 使用方法
+
+### 安装
+
+通过 pip 安装 Humming：
+
+```bash
+pip install humming-kernels
+```
+
+Humming 使用 CUDA 编译器按需生成内核。如果系统中没有可用的 CUDA 编译器，可以根据环境的 CUDA 主版本，选择以下一种方式一并安装编译依赖：
+
+```bash
+pip install "humming-kernels[cu12]"  # CUDA 12
+pip install "humming-kernels[cu13]"  # CUDA 13
+```
+
+Humming 本身极其轻量，依赖简单，wheel 安装包仅约 500 KB。得益于按需编译的设计，安装时无需携带庞大的预编译内核。理论上，能够运行 PyTorch 2.7 的环境都可以使用 Humming，方便接入已有的推理环境。
+
+### 在 vLLM 中使用
+
+Humming 已与 vLLM 深度集成。用户可以通过 `--linear-backend` 和 `--moe-backend`，分别选择 Humming 作为 Dense GEMM 和 MoE GEMM 的计算后端。例如，同时为两类计算启用 Humming：
+
+```bash
+vllm serve openai/gpt-oss-20b --linear-backend humming --moe-backend humming
+```
+
+对于 vLLM 尚未原生支持解析、但 Humming 支持的量化 checkpoint，也可以尝试通过 `--quantization humming` 显式选择 Humming 的量化加载路径：
+
+```bash
+vllm serve openai/gpt-oss-20b --quantization humming
+```
+
+### 选择激活类型
+
+默认情况下，Humming 沿用 checkpoint 中设定的激活类型，并根据设备能力自动适配。如果 GPU 不支持对应的计算类型，Humming 会回退到设备支持的更高精度类型。例如，在不支持原生 MXFP4 计算的设备上，可以自动选择 FP8、BF16 或 FP16 计算路径，让同一份量化 checkpoint 适配不同代际的 GPU。
+
+用户也可以通过 vLLM 的量化配置接口覆盖默认设置，按部署需求选择激活类型。以下示例将 MoE 层的激活类型指定为 MXFP8：
+
+```bash
+vllm serve openai/gpt-oss-20b --moe-backend humming --quantization-config.moe.activation mxfp8
+```
+
 ## 未来计划
 
 ### 更完善的设备支持
@@ -214,3 +218,7 @@ Humming 将继续扩展统一架构的硬件覆盖，并深入适配新设备的
 经过针对性调优，Humming 已能在多数场景达到 SOTA 级别的性能。但模型形状、量化配置与设备资源的组合十分丰富，启发式逻辑难以在所有情况下都选出最优配置。
 
 为此，Humming 计划引入 autotune，通过在目标设备上实测候选配置，为具体负载寻找更合适的执行参数。自动调优将与现有启发式互补，减少手动搜索配置的成本，让更多场景接近内核的最佳性能。
+
+### 深化与推理框架的集成
+
+Humming 将继续深化与 vLLM 等推理框架的集成，为所有受支持的量化方法接入专家并行（EP）中的量化 All-to-All（A2A）通信，降低专家路由过程中的跨卡通信开销。我们也将持续完善量化模型加载、后端选择与设备适配，让内核层面的性能优势更充分地转化为实际部署中的端到端收益。
