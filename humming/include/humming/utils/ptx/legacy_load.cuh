@@ -72,7 +72,11 @@
 template <bool use_cp_async, typename T, uint32_t cache_type = 0, bool evict_first = false>
 CUDA_INLINE void legacy_load(const T *gmem_ptr, T *smem_ptr) {
   if constexpr (!use_cp_async) {
-    smem_ptr[0] = gmem_ptr[0];
+    if constexpr (evict_first && !USE_PPU) {
+      smem_ptr[0] = __ldcs(gmem_ptr);
+    } else {
+      smem_ptr[0] = gmem_ptr[0];
+    }
     return;
   }
 
@@ -90,7 +94,7 @@ CUDA_INLINE void legacy_load(const T *gmem_ptr, T *smem_ptr) {
 template <bool use_cp_async, typename T, uint32_t cache_type = 0, bool evict_first = false>
 CUDA_INLINE void legacy_load_pred(const T *gmem_ptr, T *smem_ptr, bool pred) {
   if constexpr (!use_cp_async) {
-    if (pred) smem_ptr[0] = gmem_ptr[0];
+    if (pred) legacy_load<false, T, cache_type, evict_first>(gmem_ptr, smem_ptr);
     return;
   }
 
