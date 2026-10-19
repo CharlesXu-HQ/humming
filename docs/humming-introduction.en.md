@@ -1,9 +1,9 @@
 # Announcing Humming: Fast, Flexible Kernels for Quantized Inference
 
-Ant Group and the vLLM community are open-sourcing Humming, a general-purpose, high-performance kernel library for quantized inference.
+Ant Group and the vLLM community are open-sourcing Humming, a general-purpose, high-performance kernel library for quantized inference. Humming offers the following features:
 
 - **Broad device support**: Supports NVIDIA GPU architectures from Turing onward, along with CUDA-compatible devices such as T-Head's Zhenwu 810E.
-- **Extensive quantization support**: A unified architecture supports WnA16, W8A8, W4A8, and W4A4 for dense and MoE workloads, with a wide range of integer and floating-point formats.
+- **Extensive quantization support**: A unified architecture supports diverse combinations of weight and activation formats for dense and MoE workloads, covering a wide range of integer and floating-point types, bit widths, and scaling schemes.
 - **Strong execution performance**: Significantly outperforms existing implementations from vLLM Marlin, FlashInfer, and DeepGEMM across many representative workloads.
 
 Repository: [github.com/vllm-project/humming](https://github.com/vllm-project/humming)

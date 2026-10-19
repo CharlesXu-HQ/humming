@@ -1,9 +1,9 @@
 # Humming：高性能、灵活的量化推理内核
 
-蚂蚁集团与 vLLM 社区联合开源 Humming，一个通用、高性能的量化推理算子库。
+蚂蚁集团与 vLLM 社区联合开源 Humming，一个通用、高性能的量化推理算子库。Humming 具备以下特点：
 
 - **广泛的设备支持**：覆盖从 Turing 起的 NVIDIA 各代 GPU，以及平头哥 Zhenwu 810E 等兼容 CUDA 编程的设备。
-- **丰富的量化支持**：通过统一架构支持 Dense 和 MoE 场景中的 WnA16、W8A8、W4A8 和 W4A4，兼容多种整数与浮点格式。
+- **丰富的量化支持**：通过统一架构支持 Dense 和 MoE 中丰富的权重与激活格式组合，覆盖多种整数和浮点类型、位宽及缩放方式。
 - **出色的执行性能**：在多种典型负载中显著优于 vLLM Marlin、FlashInfer 和 DeepGEMM 等现有实现。
 
 项目仓库：[github.com/vllm-project/humming](https://github.com/vllm-project/humming)
