@@ -926,6 +926,9 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
         # The launcher selects grouped kernels using valid_shape_m when supplied.
         counts = cls._sample_expert_rows(shape_m, layer_config.num_experts, cls.expert_probability_cv)
         num_sms = current_device.sm_count
+        activation_columns_per_expert = counts.sum(axis=1) / np.count_nonzero(counts, axis=1)
+        activation_columns_per_expert *= layer_config.a_dtype.num_bits / layer_config.b_dtype.num_bits
+        issue_headroom = np.maximum(0, 32 - activation_columns_per_expert)
         # Sparse TMA output grids cannot amortize multiple stores per tile.
         minimum_m_tiles = ((counts + 255) // 256).sum(axis=1).mean()
         minimum_output_tiles = minimum_m_tiles * math.ceil(layer_config.shape_n / 256)
@@ -967,7 +970,12 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
                     work = stream_work
 
             # Cooperative CTAs share the issue overhead of one wider output tile.
-            tile_rounds = work / k_iters * (block_n + 32 / cta_group_size)
+            tile_overhead = np.full(waves.shape, 32.0)
+            if cls._has_mixed_raw_weight(layer_config) and not config["use_tma_a"]:
+                # Only repeated tiles pay handoff costs; short K amortizes them poorly.
+                tile_handoff_fraction = (waves - 1) / waves
+                tile_overhead += issue_headroom * stages / k_iters * tile_handoff_fraction
+            tile_rounds = work / k_iters * (block_n + tile_overhead / cta_group_size)
             # Narrow native tiles still pay fixed issue, scale-copy and barrier costs.
             has_native_scales = layer_config.use_raw_weight and layer_config.use_block_scaled_mma
             compute_rows = max(block_m, 32) if has_native_scales else block_m
@@ -977,7 +985,7 @@ class Sm100UmmaHeuristics(DeviceHeuristics):
                 # Replace the fixed A/issue allowance once valid A rows exceed it.
                 activation_columns = counts.sum(axis=1) / m_tiles
                 activation_columns *= layer_config.a_dtype.num_bits / layer_config.b_dtype.num_bits
-                activation_columns = np.maximum(32, activation_columns) / cta_group_size
+                activation_columns = np.maximum(tile_overhead, activation_columns) / cta_group_size
                 operand_work = work / k_iters * (block_n + activation_columns)
             score = float(np.sqrt(operand_work * padded_work).mean())
             pipeline_penalty = 1 + 1 / stages
