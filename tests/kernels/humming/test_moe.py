@@ -197,6 +197,21 @@ MOE_CASES = (
         pad_shape_k=32,
     ),
     _case(
+        # 30 real input-scale groups leave half of the last packed word unused.
+        "indexed-mxfp4-mxfp8-bias-pad-k",
+        GemmType.INDEXED,
+        a_dtype=dtypes.float8e4m3,
+        b_dtype=dtypes.float4e2m1,
+        as_dtype=dtypes.float8e8m0,
+        bs_dtype=dtypes.float8e8m0,
+        input_quant_mode="dynamic_group",
+        input_scale_group_size=32,
+        weight_scale_group_size=32,
+        has_bias=True,
+        pad_shape_k=64,
+        sm_version=BLOCK_SCALED_SM_VERSION,
+    ),
+    _case(
         "grouped-contiguous-pad-n",
         GemmType.GROUPED_CONTIGUOUS,
         pad_shape_n=24,
