@@ -108,7 +108,7 @@ Humming 对量化类型的支持主要取决于激活类型与权重类型是否
 
 Humming 还支持一种指数位数为 0 的特殊浮点格式，其取值范围等价于相同位宽的对称整数。例如，排除 `-128` 的 INT8 与 `float8e0m7` 都表示 `-127` 到 `127` 的整数。这类权重与激活类型的兼容性等同于相同位宽的 INT 权重。对于符合转换条件的对称整数权重，Humming 会自动将其转换为这种格式，以加快反量化。
 
-在原生硬件计算方面，社区还发现了 Blackwell Tensor Core 的两项隐藏能力：支持 `float4e0m3` 和 `float8e3m4` 这两种未在 PTX 类型系统中公开的特殊浮点格式。Humming 已在所有 Blackwell 架构上支持这些特性，包括数据中心的 SM100/SM103，以及面向工作站与个人计算设备的 SM120/SM121，并将其纳入统一的量化与计算框架，为低精度推理提供更多原生计算选择。Rubin 不支持这两种隐藏的 Tensor Core 格式，因此这些原生计算路径的支持范围不延伸至 Rubin。
+在原生硬件计算方面，社区还发现了 [Blackwell Tensor Core 的两项隐藏能力](https://zhuanlan.zhihu.com/p/2059376150565089368)：支持 `float4e0m3` 和 `float8e3m4` 这两种未在 PTX 类型系统中公开的特殊浮点格式。Humming 已在所有 Blackwell 架构上支持这些特性，包括数据中心的 SM100/SM103，以及面向工作站与个人计算设备的 SM120/SM121，并将其纳入统一的量化与计算框架，为低精度推理提供更多原生计算选择。Rubin 不支持这两种隐藏的 Tensor Core 格式，因此这些原生计算路径的支持范围不延伸至 Rubin。
 
 ### 性能
 
@@ -181,16 +181,18 @@ Humming 本身极其轻量，依赖简单，wheel 安装包仅约 500 KB。得�
 
 ### 在 vLLM 中使用
 
-Humming 已与 vLLM 深度集成。用户可以通过 `--linear-backend` 和 `--moe-backend`，分别选择 Humming 作为 Dense GEMM 和 MoE GEMM 的计算后端。例如，同时为两类计算启用 Humming：
+Humming 已与 vLLM 深度集成。从 vLLM 0.29.0 开始，CUDA 版本的 vLLM 已自带 Humming 依赖，用户无需再手动安装 Humming。Humming 支持 Turing（SM75）及之后所有 NVIDIA GPU 架构上的设备。
+
+用户可以通过 `--linear-backend` 和 `--moe-backend`，分别选择 Humming 作为 Dense GEMM 和 MoE GEMM 的计算后端。例如，同时为两类计算启用 Humming：
 
 ```bash
 vllm serve openai/gpt-oss-20b --linear-backend humming --moe-backend humming
 ```
 
-对于 vLLM 尚未原生支持解析、但 Humming 支持的量化 checkpoint，也可以尝试通过 `--quantization humming` 显式选择 Humming 的量化加载路径：
+`--quantization humming` 仅作为兼容性加载入口，用于 Humming 支持、但 vLLM 已不再支持或尚未原生支持的格式，例如 GPTQ INT3。以下示例通过该兼容路径加载 GPTQ INT3 checkpoint：
 
 ```bash
-vllm serve openai/gpt-oss-20b --quantization humming
+vllm serve hfl/Qwen2.5-VL-3B-Instruct-GPTQ-Int3 --quantization humming
 ```
 
 ### 选择激活类型
