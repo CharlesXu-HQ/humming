@@ -209,8 +209,13 @@ def test_nvrtc_signature_uses_subprocess_library(monkeypatch):
 
     monkeypatch.setattr(compiler_module, "get_nvrtc_library_path", lambda: "/toolkit/libnvrtc.so")
     monkeypatch.setattr(compiler_module.ctypes, "CDLL", load_library)
-    assert compiler_module.NVRTCCompiler.signature() == "nvrtc+13.2"
-    assert loaded_paths == ["/toolkit/libnvrtc.so"]
+    compiler_module.NVRTCCompiler._get_version.cache_clear()
+    try:
+        assert compiler_module.NVRTCCompiler.signature() == "nvrtc+13.2"
+        assert compiler_module.NVRTCCompiler.signature() == "nvrtc+13.2"
+        assert loaded_paths == ["/toolkit/libnvrtc.so"]
+    finally:
+        compiler_module.NVRTCCompiler._get_version.cache_clear()
 
 
 @pytest.mark.parametrize("limit", (1, 3, 32))
