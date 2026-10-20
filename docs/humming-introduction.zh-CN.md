@@ -183,10 +183,12 @@ Humming 本身极其轻量，依赖简单，wheel 安装包仅约 500 KB。得�
 
 Humming 已与 vLLM 深度集成。从 vLLM 0.29.0 开始，CUDA 版本的 vLLM 已自带 Humming 依赖，用户无需再手动安装 Humming。Humming 支持 Turing（SM75）及之后所有 NVIDIA GPU 架构上的设备。
 
-用户可以通过 `--linear-backend` 和 `--moe-backend`，分别选择 Humming 作为 Dense GEMM 和 MoE GEMM 的计算后端。例如，同时为两类计算启用 Humming：
+用户可以通过 `--linear-backend` 和 `--moe-backend`，分别选择 Humming 作为 Dense GEMM 和 MoE GEMM 的计算后端。例如，在张量并行度为 8（TP=8）时，同时为两类计算启用 Humming：
 
 ```bash
-vllm serve openai/gpt-oss-20b --linear-backend humming --moe-backend humming
+vllm serve deepseek-ai/DeepSeek-V4.1-Flash-1017 \
+    --tensor-parallel-size 8 \
+    --linear-backend humming --moe-backend humming
 ```
 
 `--quantization humming` 仅作为兼容性加载入口，用于 Humming 支持、但 vLLM 已不再支持或尚未原生支持的格式，例如 GPTQ INT3。以下示例通过该兼容路径加载 GPTQ INT3 checkpoint：
