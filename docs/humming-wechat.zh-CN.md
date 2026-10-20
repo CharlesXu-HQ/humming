@@ -46,8 +46,6 @@ Humming 对这条计算路径进行了系统优化。在 Dense W4A16 测试中�
 
 这种收益也延伸到了 MoE。面对 token 分散到不同专家、各专家计算规模随负载变化的特点，Humming 同时提供 Indexed 和 Grouped 两类执行路径。在博客展示的部分中大批量测试中，H20、H200 上的 MXFP4 W4A16 达到约两倍于 Marlin 的性能；B300 上部分量化组合的 Grouped 路径则达到约五倍。
 
-![MoE W4A16 内核性能对比](humming-w4a16-moe-performance-en.svg)
-
 这些是内核级的性能结果，其收益会受到模型结构、调度和其他计算环节的共同影响。前面的端到端测试进一步展示了 Humming 在实际模型服务中的表现。
 
 Humming 的支持范围也不限于 W4A16。INT1、INT2、INT3，以及 FP4 到 FP8 等不同位宽的权重，都能通过统一的反量化与计算路径获得优化。开发者因此拥有更细粒度的选择，可以结合模型需求，在精度、存储和执行效率之间进行权衡。
@@ -67,10 +65,6 @@ Humming 为此设计了高效的 MXFP4 到 INT8/FP8 反量化路径，在内核�
 ![H20 与 H200 上 W8A8、W4A8 相对 DeepGEMM W8A8 的性能对比](humming-w8a8-w4a8-hopper-performance-en.svg)
 
 从 Blackwell 开始，硬件进一步提供了对 MXFP8、MXFP4 等微缩放格式的原生支持。Humming 继续利用这些能力，将 W8A8、W4A8、W4A4 等计算路径纳入同一套架构，覆盖数据中心 GPU，也覆盖工作站和个人计算设备。
-
-在 B300 上，Humming 的优化进一步覆盖原生 MX 格式计算。下图的三个子图分别比较 W8A8、W4A8 和 W4A4，并以对应精度的 DeepGEMM Contiguous 为基准。Indexed 与 Grouped 路径在多种计算规模下都展现出良好的性能，让开发者可以结合激活精度和专家布局选择合适的计算方式。
-
-![B300 上 MX 格式 W8A8、W4A8、W4A4 内核性能对比](humming-mx-moe-sm103-performance-en.svg)
 
 **广泛支持背后，是统一架构。**
 
