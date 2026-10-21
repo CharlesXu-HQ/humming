@@ -146,7 +146,7 @@ Humming 的优化同样覆盖 W4A16 之外的 WnA16 组合。统一的反量化�
   <a href="humming-w8a8-w4a8-hopper-performance-en.svg"><img src="humming-w8a8-w4a8-hopper-performance-en.svg" alt="H20 和 H200 上 MoE W8A8 与 W4A8 相对 DeepGEMM Contiguous W8A8 的加速比" width="1200"></a>
 </p>
 
-随着越来越多模型原生采用 MXFP4 权重量化，如何将更小的权重存储转化为实际推理收益也变得更加重要。Humming 为此设计了高效的 W4A8 路径，在加载 MXFP4 权重的同时完成快速反量化，并利用 FP8 Tensor Core 执行计算，让 Hopper 也能高效运行 W4A8-MXFP4。上图右列仍以 DeepGEMM W8A8 为基准：在中小批量下，Humming 的 W4A8 在 H20 上最高达到约 4.2 倍、在 H200 上约 4.5 倍的性能，也明显快于同图中的 Humming W8A8。更低的权重访存开销由此转化为更低的 GEMM 延迟。
+随着越来越多模型原生采用 MXFP4 权重量化，如何将更小的权重存储转化为实际推理收益也变得更加重要。Humming 为此设计了高效的 W4A8 路径，在加载 MXFP4 权重的同时完成快速反量化，并利用 FP8 Tensor Core 执行计算，让 Hopper 也能高效运行 W4A8-MXFP4。上图右列仍以 DeepGEMM W8A8 为基准：在中小批量下，Humming 的 W4A8 在 H20 上最高达到约 4.2 倍、在 H200 上约 4.5 倍的性能，也明显快于同图中的 Humming W8A8。更低的权重访存开销由此转化为更低的 GEMM 延迟。FlashInfer CUTLASS W4A8 也是参考 Humming 方法的实现，而 Humming 当前的实现在上述测试中展现出更好的性能。
 
 Blackwell 进一步将 MXFP8、MXFP4 等微缩放格式纳入原生 Tensor Core 计算支持。从数据中心的 SM100/SM103，到面向工作站与个人计算设备的 SM120/SM121，Humming 利用各架构对应的低精度计算能力，将 W8A8、W4A8 和 W4A4 纳入同一套内核与调优框架。
 
